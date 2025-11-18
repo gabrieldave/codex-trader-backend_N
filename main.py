@@ -660,8 +660,16 @@ origins = [
 ]
 
 # Añadir FRONTEND_URL si está configurado y no está ya en la lista
-if FRONTEND_URL and FRONTEND_URL not in origins:
-    origins.append(FRONTEND_URL)
+if FRONTEND_URL:
+    # Normalizar FRONTEND_URL (sin barra final, sin /app)
+    frontend_url_clean = FRONTEND_URL.rstrip('/').replace('/app', '')
+    if frontend_url_clean not in origins:
+        origins.append(frontend_url_clean)
+    # Asegurar que también incluya la versión con www si corresponde
+    if 'codextrader.tech' in frontend_url_clean and 'www.' not in frontend_url_clean:
+        www_version = frontend_url_clean.replace('https://codextrader.tech', 'https://www.codextrader.tech')
+        if www_version not in origins:
+            origins.append(www_version)
 
 logger.info(f"🌐 CORS configurado - Orígenes permitidos: {origins}")
 
