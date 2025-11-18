@@ -2421,9 +2421,10 @@ async def reload_tokens(token_input: TokenReloadInput, user = Depends(get_user))
         # (opcional, puedes comentar esta línea si quieres permitir negativos)
         # nuevos_tokens = max(0, nuevos_tokens)
         
-        # Actualizar tokens
+        # Actualizar tokens y resetear flag de email de recarga (para permitir nuevo email)
         update_response = supabase_client.table("profiles").update({
-            "tokens_restantes": nuevos_tokens
+            "tokens_restantes": nuevos_tokens,
+            "tokens_reload_email_sent": False  # Resetear flag para permitir nuevo email
         }).eq("id", user_id).execute()
         
         # Obtener email del usuario para enviar notificaciones
@@ -2490,6 +2491,18 @@ async def reload_tokens(token_input: TokenReloadInput, user = Depends(get_user))
             def send_user_email_background():
                 try:
                     if user_email:
+                        # Verificar si ya se envió el email de confirmación de recarga (flag en base de datos)
+                        try:
+                            profile_check = supabase_client.table("profiles").select("tokens_reload_email_sent").eq("id", user_id).execute()
+                            reload_email_already_sent = profile_check.data[0].get("tokens_reload_email_sent", False) if profile_check.data else False
+                            
+                            if reload_email_already_sent:
+                                print(f"⚠️ Email de confirmación de recarga ya fue enviado anteriormente para {user_email}. Saltando envío.")
+                                return
+                        except Exception as check_error:
+                            # Si falla la verificación, continuar con el envío (no crítico)
+                            print(f"⚠️ Error al verificar flag tokens_reload_email_sent: {check_error}. Continuando con envío.")
+                        
                         user_name = user_email.split('@')[0] if '@' in user_email else 'usuario'
                         # Construir URL del app antes del f-string
                         import os
@@ -2539,11 +2552,21 @@ async def reload_tokens(token_input: TokenReloadInput, user = Depends(get_user))
                         </body>
                         </html>
                         """
-                        send_email(
+                        result = send_email(
                             to=user_email,
                             subject="✅ Tokens recargados exitosamente - Codex Trader",
                             html=user_html
                         )
+                        
+                        # Marcar flag en base de datos si el email se envió exitosamente
+                        if result:
+                            try:
+                                supabase_client.table("profiles").update({
+                                    "tokens_reload_email_sent": True
+                                }).eq("id", user_id).execute()
+                                print(f"✅ Flag tokens_reload_email_sent marcado en base de datos para {user_id}")
+                            except Exception as flag_error:
+                                print(f"⚠️ No se pudo marcar flag tokens_reload_email_sent: {flag_error} (no crítico)")
                 except Exception as e:
                     print(f"⚠️ Error al enviar email al usuario por recarga de tokens: {e}")
             
@@ -3089,11 +3112,20 @@ async def handle_checkout_session_completed(session: dict):
         
         # Obtener información del plan para establecer tokens iniciales
         tokens_per_month = None
+        plan = None
         if plan_code:
             from plans import get_plan_by_code
             plan = get_plan_by_code(plan_code)
             if plan:
                 tokens_per_month = plan.tokens_per_month
+                logger.info(f"✅ Plan encontrado: {plan_code} -> {tokens_per_month:,} tokens/mes")
+            else:
+                logger.error(f"❌ ERROR CRÍTICO: Plan '{plan_code}' no encontrado en plans.py")
+                print(f"❌ ERROR CRÍTICO: Plan '{plan_code}' no encontrado. Los tokens NO se sumarán.")
+        else:
+            logger.error(f"❌ ERROR CRÍTICO: plan_code no está en metadata del checkout session")
+            print(f"❌ ERROR CRÍTICO: plan_code no está en metadata. Session ID: {session.get('id')}")
+            print(f"   Metadata disponible: {metadata}")
         
         # Preparar datos para actualizar
         # IMPORTANTE: Aquí se actualiza current_plan, stripe_customer_id y tokens en la tabla profiles
@@ -3115,7 +3147,8 @@ async def handle_checkout_session_completed(session: dict):
                 if tokens_per_month:
                     new_tokens = current_tokens + tokens_per_month
                     update_data["tokens_restantes"] = new_tokens
-                    logger.info(f"💰 Tokens sumados para usuario {user_id}: {current_tokens} + {tokens_per_month} = {new_tokens}")
+                    logger.info(f"💰 Tokens sumados para usuario {user_id}: {current_tokens:,} + {tokens_per_month:,} = {new_tokens:,}")
+                    print(f"💰 Tokens sumados para usuario {user_id}: {current_tokens:,} + {tokens_per_month:,} = {new_tokens:,}")
                     
                     # Actualizar tokens_monthly_limit con el máximo entre el límite actual y el nuevo plan
                     try:
@@ -3131,11 +3164,23 @@ async def handle_checkout_session_completed(session: dict):
                         update_data["fair_use_discount_used"] = False
                         update_data["fair_use_discount_eligible_at"] = None
                         update_data["fair_use_email_sent"] = False
+                else:
+                    # CRÍTICO: Si tokens_per_month es None, los tokens NO se sumarán
+                    logger.error(f"❌ ERROR CRÍTICO: tokens_per_month es None para plan_code '{plan_code}'. Los tokens NO se sumarán.")
+                    print(f"❌ ERROR CRÍTICO: tokens_per_month es None. Los tokens NO se actualizarán.")
+                    print(f"   Esto puede ocurrir si:")
+                    print(f"   1. El plan '{plan_code}' no existe en plans.py")
+                    print(f"   2. El plan no tiene tokens_per_month definido")
             except Exception as e:
                 logger.error(f"Error al obtener tokens actuales, usando tokens del plan directamente: {e}")
+                print(f"⚠️ Error al obtener tokens actuales: {e}")
                 # Fallback: usar tokens del plan si hay error
                 if tokens_per_month:
                     update_data["tokens_restantes"] = tokens_per_month
+                    logger.info(f"💰 Fallback: Tokens establecidos a {tokens_per_month:,} (sin sumar)")
+                else:
+                    logger.error(f"❌ ERROR: No se pueden establecer tokens porque tokens_per_month es None")
+                    print(f"❌ ERROR: No se pueden establecer tokens porque tokens_per_month es None")
         
         # IMPORTANTE: Si el usuario usó el descuento de uso justo, marcarlo
         # Verificar en metadata si se aplicó el descuento
@@ -3155,12 +3200,35 @@ async def handle_checkout_session_completed(session: dict):
             update_data["current_period_end"] = datetime.fromtimestamp(current_period_end).isoformat()
         
         # Actualizar el perfil del usuario
+        logger.info(f"📝 Actualizando perfil con datos: {update_data}")
+        print(f"📝 Actualizando perfil con: plan={plan_code}, tokens_restantes={'sumados' if 'tokens_restantes' in update_data else 'NO incluidos'}")
+        
         update_response = supabase_client.table("profiles").update(update_data).eq("id", user_id).execute()
         
         if update_response.data:
-            print(f"✅ Perfil actualizado para usuario {user_id}: plan={plan_code}, customer={customer_id}")
+            # Verificar que tokens_restantes se actualizó correctamente
+            updated_profile = update_response.data[0]
+            updated_tokens = updated_profile.get("tokens_restantes")
             
-            # IMPORTANTE: Registrar pago inicial en tabla stripe_payments para análisis de ingresos
+            if "tokens_restantes" in update_data:
+                expected_tokens = update_data["tokens_restantes"]
+                if updated_tokens == expected_tokens:
+                    logger.info(f"✅ Perfil actualizado correctamente para usuario {user_id}: plan={plan_code}, tokens={updated_tokens:,}")
+                    print(f"✅ Perfil actualizado: plan={plan_code}, tokens={updated_tokens:,}")
+                else:
+                    logger.error(f"❌ ERROR: Tokens no coinciden. Esperado: {expected_tokens:,}, Actual: {updated_tokens}")
+                    print(f"❌ ERROR: Tokens no coinciden. Esperado: {expected_tokens:,}, Actual: {updated_tokens}")
+            else:
+                logger.warning(f"⚠️ ADVERTENCIA: tokens_restantes no se incluyó en la actualización")
+                print(f"⚠️ ADVERTENCIA: tokens_restantes no se actualizó (no estaba en update_data)")
+                print(f"✅ Perfil actualizado para usuario {user_id}: plan={plan_code}, customer={customer_id}")
+        else:
+            logger.error(f"❌ ERROR: update_response.data está vacío. La actualización puede haber fallado.")
+            print(f"❌ ERROR: update_response.data está vacío. La actualización puede haber fallado.")
+            print(f"   Verifica que el usuario {user_id} existe en la tabla profiles")
+        
+        # IMPORTANTE: Registrar pago inicial en tabla stripe_payments para análisis de ingresos (solo si la actualización fue exitosa)
+        if update_response.data:
             try:
                 from datetime import datetime
                 # Obtener monto desde Stripe (necesitamos obtener la invoice o subscription)
@@ -4692,7 +4760,7 @@ async def notify_user_registration(
         try:
             # Primero intentar obtener todas las columnas (incluyendo referral_code si existe)
             profile_response = supabase_client.table("profiles").select(
-                "referral_code, referred_by_user_id, current_plan, created_at, tokens_restantes"
+                "referral_code, referred_by_user_id, current_plan, created_at, tokens_restantes, welcome_email_sent"
             ).eq("id", user_id).execute()
         except Exception as e:
             # Si falla porque referral_code no existe, intentar sin esa columna
@@ -4711,6 +4779,17 @@ async def notify_user_registration(
             profile_data = {}
         else:
             profile_data = profile_response.data[0]
+        
+        # Verificar si ya se envió el email de bienvenida (flag en base de datos)
+        welcome_email_already_sent = profile_data.get("welcome_email_sent", False)
+        if welcome_email_already_sent:
+            logger.info(f"[EMAIL] Email de bienvenida ya fue enviado anteriormente para {user_email}. Saltando envío.")
+            print(f"   [INFO] Email de bienvenida ya fue enviado anteriormente. Saltando envío.")
+            return {
+                "success": True,
+                "message": "Email de bienvenida ya fue enviado anteriormente",
+                "already_sent": True
+            }
         
         # Asegurar que tenemos el referral_code (usar el que acabamos de asignar o el del perfil)
         if not referral_code or referral_code == "No disponible":
@@ -4973,6 +5052,17 @@ async def notify_user_registration(
                     if result:
                         logger.info(f"[OK] Email de bienvenida enviado correctamente a {user_email}")
                         print(f"   [OK] Email de bienvenida enviado correctamente a {user_email}")
+                        
+                        # Marcar flag en base de datos para evitar duplicados
+                        try:
+                            supabase_client.table("profiles").update({
+                                "welcome_email_sent": True
+                            }).eq("id", user_id).execute()
+                            logger.info(f"[OK] Flag welcome_email_sent marcado en base de datos para {user_id}")
+                            print(f"   [OK] Flag welcome_email_sent marcado en base de datos")
+                        except Exception as flag_error:
+                            logger.warning(f"[WARNING] No se pudo marcar flag welcome_email_sent: {flag_error}")
+                            print(f"   [WARNING] No se pudo marcar flag welcome_email_sent (no crítico)")
                     else:
                         logger.error("[ERROR] Error al enviar email de bienvenida (revisa logs anteriores)")
                         print(f"   [ERROR] Error al enviar email de bienvenida (revisa logs anteriores)")
