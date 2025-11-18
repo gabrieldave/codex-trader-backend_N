@@ -24,16 +24,6 @@ try:
     # Importar el paquete oficial de stripe desde PyPI usando import absoluto
     # Usar __import__ para forzar importación del paquete de PyPI, no del módulo local
     try:
-        # Intentar obtener versión desde pkg_resources (puede estar deprecado)
-        stripe_version_from_pkg = None
-        try:
-            import pkg_resources
-            stripe_dist = pkg_resources.get_distribution('stripe')
-            stripe_version_from_pkg = stripe_dist.version
-        except:
-            # pkg_resources puede no estar disponible, ignorar
-            pass
-        
         # Importar usando __import__ con fromlist para asegurar que es el paquete, no el módulo
         stripe_package = __import__('stripe', fromlist=['__version__'])
         stripe = stripe_package
@@ -42,7 +32,7 @@ try:
         # __version__ y error pueden no estar disponibles en algunas versiones, así que solo verificamos checkout
         if hasattr(stripe, 'checkout'):
             STRIPE_IMPORTED = True
-            stripe_version = getattr(stripe, '__version__', stripe_version_from_pkg or 'unknown')
+            stripe_version = getattr(stripe, '__version__', 'unknown')
             has_error = hasattr(stripe, 'error')
             if has_error:
                 print(f"✅ Stripe importado correctamente - Versión: {stripe_version}")
@@ -62,7 +52,7 @@ try:
         # Verificar checkout (__version__ y error son opcionales)
         if hasattr(stripe, 'checkout'):
             STRIPE_IMPORTED = True
-            stripe_version = getattr(stripe, '__version__', stripe_version_from_pkg or 'unknown')
+            stripe_version = getattr(stripe, '__version__', 'unknown')
             has_error = hasattr(stripe, 'error')
             if has_error:
                 print(f"✅ Stripe importado correctamente - Versión: {stripe_version}")
