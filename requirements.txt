@@ -1,0 +1,19 @@
+# 1. Usar el índice de CPU de PyTorch
+--index-url https://download.pytorch.org/whl/cpu
+
+# 2. AÑADIR el índice principal de PyPI (esta es la corrección)
+--extra-index-url https://pypi.org/simple
+
+# 3. Ahora sí, listar todas las dependencias
+torch
+sentence-transformers
+numpy
+tenacity
+fastapi
+uvicorn[standard]
+python-dotenv
+supabase
+litellm
+stripe
+sqlalchemy
+vecs

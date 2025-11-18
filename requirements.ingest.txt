@@ -1,0 +1,14 @@
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-dotenv==1.0.1
+supabase==2.10.0
+llama-index==0.12.0
+llama-index-embeddings-openai==0.3.0
+llama-index-vector-stores-supabase==0.3.0
+openai>=1.55.3
+litellm==1.55.0
+psycopg2-binary==2.9.10
+pydantic==2.9.2
+python-multipart==0.0.12
+stripe==10.8.0
+sentence-transformers

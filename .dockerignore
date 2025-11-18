@@ -1,0 +1,27 @@
+# Ignorar el historial de Git y configuraciones
+.git/
+.gitignore
+.dockerignore
+.vscode/
+
+# Ignorar el entorno virtual local
+venv_ingesta/
+venv/
+.venv/
+
+# Ignorar secretos
+.env
+*.env
+
+# ¡EL MÁS IMPORTANTE! Ignorar los 10GB de libros
+data/
+
+# Caché de Python y otros
+__pycache__/
+*.pyc
+*.log
+
+
+
+
+

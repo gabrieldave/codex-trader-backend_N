@@ -1,0 +1,25 @@
+# Ignorar backend y otros archivos no necesarios para el frontend
+backend/
+*.py
+*.sql
+*.bat
+*.log
+*.md
+!frontend/*.md
+data/
+libros procesados/
+rag_infrastructure/
+scripts/
+.env
+.env.local
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+ENV/
+.venv/
+

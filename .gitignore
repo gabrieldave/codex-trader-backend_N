@@ -1,0 +1,62 @@
+# Python (Entornos Virtuales)
+venv/
+venv_ingesta/
+venv_ingesta_py314_backup/
+__pycache__/
+*.pyc
+
+# Node (Dependencias de Frontend)
+node_modules/
+.next/
+out/
+
+# Datos (Tus 10.4 GB de libros)
+/backend/data/
+data/
+
+# IDE/Editor
+.vscode/
+.cursor/
+
+# Secretos
+.env
+*.env.local
+
+# Archivos de SO
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Repositorios temporales de limpieza
+backend-clean.git/
+*.bfg-report/
+bfg.jar
+
+# Logs
+*.log
+tokens_log.json
+logs/
+
+# Test files
+test_*.py
+*_test.py
+
+# Archivos grandes
+*.pdf
+*.epub
+*.pkl
+*.bin
+*.onnx
+*.pt
+*.h5
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Cache y temporales
+*.tmp
+*.temp
+*.bak
+*.backup
