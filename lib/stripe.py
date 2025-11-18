@@ -30,8 +30,10 @@ try:
         print(f"✅ Stripe importado correctamente - Versión: {stripe_version}")
     else:
         STRIPE_IMPORTED = False
+        has_version = hasattr(stripe, '__version__') if stripe else False
+        has_checkout = hasattr(stripe, 'checkout') if stripe else False
         stripe = None
-        print(f"⚠️ WARNING: El módulo stripe importado no parece ser el paquete oficial (tiene __version__: {hasattr(stripe, '__version__')}, tiene checkout: {hasattr(stripe, 'checkout') if stripe else None)}")
+        print(f"⚠️ WARNING: El módulo stripe importado no parece ser el paquete oficial (tiene __version__: {has_version}, tiene checkout: {has_checkout})")
 except ImportError as e:
     STRIPE_IMPORTED = False
     stripe = None
