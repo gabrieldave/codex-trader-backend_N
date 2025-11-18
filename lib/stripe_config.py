@@ -7,8 +7,8 @@ from typing import Dict, Optional
 
 # Intentar importar stripe
 # IMPORTANTE: Importar directamente desde el paquete oficial de PyPI
-# Este módulo se llama lib.stripe, pero necesitamos importar el paquete 'stripe' de PyPI
-# Para evitar conflictos, verificamos el __file__ del módulo importado
+# Este módulo se llama lib.stripe_config para evitar conflictos con el paquete 'stripe' de PyPI
+# Importamos el paquete oficial 'stripe' usando __import__ con fromlist
 try:
     import sys
     import importlib.util
@@ -17,8 +17,8 @@ try:
     old_stripe = None
     if 'stripe' in sys.modules:
         old_module = sys.modules['stripe']
-        # Si es este mismo módulo (lib/stripe.py), eliminarlo
-        if hasattr(old_module, '__file__') and old_module.__file__ and 'lib/stripe.py' in old_module.__file__:
+        # Si es este mismo módulo (lib/stripe_config.py), eliminarlo (aunque no debería ser necesario ahora)
+        if hasattr(old_module, '__file__') and old_module.__file__ and 'lib/stripe_config.py' in old_module.__file__:
             old_stripe = sys.modules.pop('stripe', None)
     
     # Importar el paquete oficial de stripe desde PyPI usando import absoluto

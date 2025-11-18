@@ -75,16 +75,9 @@ if _runtime_env:
 
 # Importar módulo de Stripe (opcional, solo si está configurado)
 try:
-    from lib.stripe import get_stripe_price_id, is_valid_plan_code, get_plan_code_from_price_id, STRIPE_WEBHOOK_SECRET
-    # Importar stripe desde lib.stripe después de que se haya inicializado correctamente
-    # El módulo lib.stripe ya se encarga de importar el paquete oficial correctamente
-    import sys
-    # Asegurar que tenemos el paquete oficial de stripe, no lib.stripe
-    if 'stripe' in sys.modules:
-        stripe = sys.modules['stripe']
-    else:
-        # Si no está, importarlo (debería estar después de importar lib.stripe)
-        import stripe
+    from lib.stripe_config import get_stripe_price_id, is_valid_plan_code, get_plan_code_from_price_id, STRIPE_WEBHOOK_SECRET
+    # Importar stripe - lib.stripe_config ya lo importó correctamente, solo lo obtenemos de sys.modules
+    import stripe
     # Verificar que stripe.api_key esté configurado y que stripe tenga los atributos necesarios
     if hasattr(stripe, 'api_key') and stripe.api_key:
         # Verificar que stripe tenga los atributos necesarios (checkout, error)
@@ -2899,7 +2892,7 @@ async def create_checkout_session(
         # IMPORTANTE: Verificar elegibilidad para descuento de uso justo (Fair Use)
         # Si el usuario es elegible y aún no ha usado el descuento, aplicar cupón automáticamente
         discounts = None
-        from lib.stripe import STRIPE_FAIR_USE_COUPON_ID
+        from lib.stripe_config import STRIPE_FAIR_USE_COUPON_ID
         
         if STRIPE_FAIR_USE_COUPON_ID:
             try:
