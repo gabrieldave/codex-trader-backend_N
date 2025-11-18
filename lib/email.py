@@ -1,5 +1,5 @@
 """
-Módulo de utilidades para envío de emails usando SMTP.
+Módulo de utilidades para envío de emails usando Resend (API REST) o SMTP como fallback.
 Proporciona funciones para enviar emails genéricos y notificaciones al administrador.
 """
 import os
@@ -8,6 +8,14 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional
 from dotenv import load_dotenv
+
+# Intentar importar Resend
+try:
+    import resend
+    RESEND_AVAILABLE = True
+except ImportError:
+    RESEND_AVAILABLE = False
+    print("WARNING: Resend no está instalado. Instala con: pip install resend")
 
 # Función para limpiar caracteres nulos de las variables de entorno
 def clean_env_vars():
@@ -46,7 +54,10 @@ except ValueError as e:
 except Exception:
     pass  # Continuar sin .env si hay otros errores
 
-# Obtener variables de entorno de SMTP
+# Obtener variables de entorno de Resend
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip('"').strip("'").strip()
+
+# Obtener variables de entorno de SMTP (fallback)
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com").strip('"').strip("'").strip()
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587").strip('"').strip("'").strip())
 SMTP_USER = os.getenv("SMTP_USER", "").strip('"').strip("'").strip()
@@ -54,12 +65,24 @@ SMTP_PASS = os.getenv("SMTP_PASS", "").strip('"').strip("'").strip()
 EMAIL_FROM = os.getenv("EMAIL_FROM", "").strip('"').strip("'").strip()
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "").strip('"').strip("'").strip()
 
-# Verificar si SMTP está configurado
+# Verificar si Resend está configurado
+RESEND_AVAILABLE_AND_CONFIGURED = RESEND_AVAILABLE and bool(RESEND_API_KEY)
+
+# Verificar si SMTP está configurado (fallback)
 SMTP_AVAILABLE = bool(SMTP_HOST and SMTP_USER and SMTP_PASS and EMAIL_FROM)
 
-if not SMTP_AVAILABLE:
-    print("WARNING: SMTP no está completamente configurado. Las funciones de email no estarán disponibles.")
-    print("   Variables requeridas: SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM")
+# Configurar Resend si está disponible
+if RESEND_AVAILABLE_AND_CONFIGURED:
+    resend.api_key = RESEND_API_KEY
+    print("✅ Resend configurado correctamente")
+elif RESEND_AVAILABLE and not RESEND_API_KEY:
+    print("WARNING: Resend está instalado pero RESEND_API_KEY no está configurado.")
+    print("   Configura RESEND_API_KEY en Railway para usar Resend (recomendado).")
+    print("   O usa SMTP como fallback.")
+
+if not RESEND_AVAILABLE_AND_CONFIGURED and not SMTP_AVAILABLE:
+    print("WARNING: Ni Resend ni SMTP están configurados. Las funciones de email no estarán disponibles.")
+    print("   Configura RESEND_API_KEY (recomendado) o SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM")
 
 
 def send_email(
@@ -69,10 +92,137 @@ def send_email(
     text: Optional[str] = None
 ) -> bool:
     """
-    Envía un email usando SMTP.
+    Envía un email usando Resend (API REST) como método principal, o SMTP como fallback.
     
     Esta función es robusta y no lanza excepciones para no bloquear el flujo principal.
     Si falla, solo registra el error en los logs.
+    
+    Prioridad:
+    1. Resend (si está configurado) - Recomendado para Railway
+    2. SMTP (si Resend no está disponible) - Fallback
+    
+    Args:
+        to: Dirección de email del destinatario
+        subject: Asunto del email
+        html: Contenido HTML del email
+        text: Contenido en texto plano (opcional, se genera desde HTML si no se proporciona)
+        
+    Returns:
+        True si el email se envió correctamente, False en caso contrario
+    """
+    if not to or not subject or not html:
+        print(f"WARNING: No se puede enviar email: faltan parámetros requeridos (to, subject, html)")
+        return False
+    
+    # Intentar primero con Resend (método recomendado)
+    if RESEND_AVAILABLE_AND_CONFIGURED:
+        return _send_email_resend(to, subject, html, text)
+    
+    # Fallback a SMTP si Resend no está disponible
+    if SMTP_AVAILABLE:
+        return _send_email_smtp(to, subject, html, text)
+    
+    print(f"WARNING: No se puede enviar email: Ni Resend ni SMTP están configurados")
+    return False
+
+
+def _send_email_resend(
+    to: str,
+    subject: str,
+    html: str,
+    text: Optional[str] = None
+) -> bool:
+    """
+    Envía un email usando Resend API (método principal, funciona en Railway).
+    
+    Args:
+        to: Dirección de email del destinatario
+        subject: Asunto del email
+        html: Contenido HTML del email
+        text: Contenido en texto plano (opcional)
+        
+    Returns:
+        True si el email se envió correctamente, False en caso contrario
+    """
+    try:
+        # Generar texto plano desde HTML si no se proporciona
+        if not text:
+            import re
+            text = re.sub(r'<[^>]+>', '', html)
+            text = text.replace('&nbsp;', ' ')
+            text = text.replace('&amp;', '&')
+            text = text.replace('&lt;', '<')
+            text = text.replace('&gt;', '>')
+        
+        # Extraer el email del formato "Nombre <email@example.com>" si es necesario
+        from_email = EMAIL_FROM
+        if '<' in EMAIL_FROM and '>' in EMAIL_FROM:
+            # Ya está en formato correcto
+            pass
+        else:
+            # Formato simple, usar como está
+            pass
+        
+        # Enviar email usando Resend
+        # Resend API espera: resend.emails.send(params)
+        params = {
+            "from": from_email,
+            "to": [to],
+            "subject": subject,
+            "html": html,
+            "text": text
+        }
+        
+        try:
+            email = resend.emails.send(params)
+            
+            # Resend devuelve un objeto con 'id' si es exitoso
+            if email and hasattr(email, 'id'):
+                print(f"OK: Email enviado exitosamente a {to} usando Resend: {subject}")
+                print(f"    Email ID: {email.id}")
+                return True
+            elif email and isinstance(email, dict) and 'id' in email:
+                print(f"OK: Email enviado exitosamente a {to} usando Resend: {subject}")
+                print(f"    Email ID: {email['id']}")
+                return True
+            else:
+                print(f"ERROR: Resend no devolvió un ID de email válido. Respuesta: {email}")
+                return False
+        except AttributeError:
+            # Si resend.emails no existe, intentar resend.Emails
+            try:
+                email = resend.Emails.send(params)
+                if email and (hasattr(email, 'id') or (isinstance(email, dict) and 'id' in email)):
+                    email_id = email.id if hasattr(email, 'id') else email.get('id', 'unknown')
+                    print(f"OK: Email enviado exitosamente a {to} usando Resend: {subject}")
+                    print(f"    Email ID: {email_id}")
+                    return True
+                else:
+                    print(f"ERROR: Resend no devolvió un ID de email válido. Respuesta: {email}")
+                    return False
+            except Exception as e2:
+                print(f"ERROR: Error al enviar email con Resend (intento alternativo): {e2}")
+                raise
+            
+    except Exception as e:
+        print(f"ERROR: Error al enviar email con Resend: {e}")
+        import traceback
+        print(f"   Traceback: {traceback.format_exc()}")
+        # Intentar fallback a SMTP si Resend falla
+        if SMTP_AVAILABLE:
+            print(f"   Intentando fallback a SMTP...")
+            return _send_email_smtp(to, subject, html, text)
+        return False
+
+
+def _send_email_smtp(
+    to: str,
+    subject: str,
+    html: str,
+    text: Optional[str] = None
+) -> bool:
+    """
+    Envía un email usando SMTP (método fallback, puede no funcionar en Railway).
     
     Args:
         to: Dirección de email del destinatario
@@ -85,10 +235,6 @@ def send_email(
     """
     if not SMTP_AVAILABLE:
         print(f"WARNING: No se puede enviar email: SMTP no está configurado")
-        return False
-    
-    if not to or not subject or not html:
-        print(f"WARNING: No se puede enviar email: faltan parámetros requeridos (to, subject, html)")
         return False
     
     try:
@@ -128,12 +274,12 @@ def send_email(
                 server.login(SMTP_USER, SMTP_PASS)
                 server.send_message(msg)
             
-            print(f"OK: Email enviado exitosamente a {to}: {subject}")
+            print(f"OK: Email enviado exitosamente a {to} usando SMTP: {subject}")
             print(f"    Thread ID: {os.getpid()}")
             return True
         except socket.timeout:
             print(f"ERROR: Timeout al conectar a SMTP ({SMTP_HOST}:{SMTP_PORT})")
-            print(f"   Railway puede tener restricciones de red. Considera usar un servicio de email con API REST (SendGrid, Resend, etc.)")
+            print(f"   Railway bloquea SMTP. Configura RESEND_API_KEY para usar Resend (recomendado).")
             return False
         except socket.gaierror as e:
             print(f"ERROR: No se puede resolver el hostname SMTP: {e}")
@@ -142,11 +288,8 @@ def send_email(
         except OSError as e:
             if "Network is unreachable" in str(e) or e.errno == 101:
                 print(f"ERROR: No se puede conectar a SMTP - Red no alcanzable: {e}")
-                print(f"   Railway puede tener restricciones de firewall bloqueando conexiones SMTP salientes")
-                print(f"   SOLUCIONES:")
-                print(f"   1. Usar un servicio de email con API REST (SendGrid, Resend, Mailgun)")
-                print(f"   2. Verificar configuración de red en Railway")
-                print(f"   3. Contactar soporte de Railway sobre restricciones SMTP")
+                print(f"   Railway bloquea conexiones SMTP salientes.")
+                print(f"   SOLUCION: Configura RESEND_API_KEY en Railway para usar Resend (recomendado).")
             else:
                 print(f"ERROR: Error de conexión SMTP: {e}")
             return False
@@ -159,7 +302,7 @@ def send_email(
         print(f"ERROR: Error SMTP al enviar email: {e}")
         return False
     except Exception as e:
-        print(f"ERROR: Error inesperado al enviar email: {e}")
+        print(f"ERROR: Error inesperado al enviar email con SMTP: {e}")
         import traceback
         print(f"   Traceback: {traceback.format_exc()}")
         return False
