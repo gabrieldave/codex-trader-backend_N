@@ -4590,8 +4590,12 @@ async def test_email_post(input_data: Optional[TestEmailInput] = None):
 # ARCHIVO: main.py (línea ~2025)
 # IMPORTANTE: Este endpoint debe llamarse desde el frontend después del registro
 # También puede llamarse con un token_hash de confirmación en el body
+# O con user_id directamente (desde trigger de base de datos)
 class NotifyRegistrationInput(BaseModel):
     token_hash: Optional[str] = None
+    user_id: Optional[str] = None
+    email: Optional[str] = None
+    triggered_by: Optional[str] = None
 
 @app.post("/users/notify-registration")
 async def notify_user_registration(
@@ -4616,10 +4620,14 @@ async def notify_user_registration(
     logger.info("[API] POST /users/notify-registration recibido")
     logger.info(f"   Authorization header presente: {bool(authorization)}")
     logger.info(f"   Token_hash en body: {bool(input_data and input_data.token_hash)}")
+    logger.info(f"   User_id en body: {bool(input_data and input_data.user_id)}")
+    logger.info(f"   Triggered_by: {input_data.triggered_by if input_data else 'None'}")
     logger.info(f"   Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"[API] POST /users/notify-registration recibido")
     print(f"   Authorization header presente: {bool(authorization)}")
     print(f"   Token_hash en body: {bool(input_data and input_data.token_hash)}")
+    print(f"   User_id en body: {bool(input_data and input_data.user_id)}")
+    print(f"   Triggered_by: {input_data.triggered_by if input_data else 'None'}")
     print(f"   Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     try:
@@ -4651,6 +4659,25 @@ async def notify_user_registration(
                 traceback.print_exc()
                 pass
         
+        # Si no hay usuario autenticado pero hay user_id (desde trigger), obtener usuario directamente
+        if not user and input_data and input_data.user_id:
+            try:
+                print(f"   [TRIGGER] Intentando obtener usuario desde user_id: {input_data.user_id}")
+                logger.info(f"[TRIGGER] Intentando obtener usuario desde user_id: {input_data.user_id}")
+                # Obtener usuario directamente desde Supabase usando service key
+                user_response = supabase_client.auth.admin.get_user_by_id(input_data.user_id)
+                if user_response and user_response.user:
+                    user = user_response.user
+                    print(f"   [OK] Usuario obtenido desde user_id (trigger): {user.email if user else 'None'}")
+                    logger.info(f"[OK] Usuario obtenido desde user_id (trigger): {user.email if user else 'None'}")
+                else:
+                    print(f"   [ERROR] No se pudo obtener usuario desde user_id")
+                    logger.warning(f"[ERROR] No se pudo obtener usuario desde user_id: {input_data.user_id}")
+            except Exception as e:
+                print(f"   [ERROR] Error al obtener usuario desde user_id: {str(e)}")
+                logger.error(f"[ERROR] Error al obtener usuario desde user_id: {str(e)}")
+                # Continuar para intentar con token_hash si está disponible
+        
         # Si no hay usuario autenticado pero hay token_hash, verificar el token_hash
         if not user and input_data and input_data.token_hash:
             try:
@@ -4678,10 +4705,11 @@ async def notify_user_registration(
         
         # Si aún no hay usuario, error
         if not user:
-            print(f"   [ERROR] No se pudo obtener usuario. Authorization: {bool(authorization)}, Token_hash: {bool(input_data and input_data.token_hash)}")
+            print(f"   [ERROR] No se pudo obtener usuario. Authorization: {bool(authorization)}, Token_hash: {bool(input_data and input_data.token_hash)}, User_id: {bool(input_data and input_data.user_id)}")
+            logger.error(f"[ERROR] No se pudo obtener usuario. Authorization: {bool(authorization)}, Token_hash: {bool(input_data and input_data.token_hash)}, User_id: {bool(input_data and input_data.user_id)}")
             raise HTTPException(
                 status_code=401,
-                detail="Se requiere autenticación (header Authorization) o token_hash de confirmación en el body"
+                detail="Se requiere autenticación (header Authorization), token_hash de confirmación, o user_id (desde trigger) en el body"
             )
         
         user_id = user.id
