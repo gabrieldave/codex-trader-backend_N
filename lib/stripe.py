@@ -6,21 +6,32 @@ import os
 from typing import Dict, Optional
 
 # Intentar importar stripe
-# IMPORTANTE: Importar directamente desde el paquete oficial
+# IMPORTANTE: Importar directamente desde el paquete oficial de PyPI
+# Usar import absoluto para evitar conflictos con este módulo (lib.stripe)
 try:
-    import stripe
-    # Verificar que stripe sea el módulo correcto (tiene __version__)
-    if hasattr(stripe, '__version__'):
+    import importlib
+    import sys
+    
+    # Si stripe ya está en sys.modules, verificar que sea el correcto
+    if 'stripe' in sys.modules:
+        existing_stripe = sys.modules['stripe']
+        # Si es este mismo módulo (lib.stripe), eliminarlo y reinstalar
+        if hasattr(existing_stripe, '__file__') and 'lib/stripe.py' in existing_stripe.__file__:
+            del sys.modules['stripe']
+    
+    # Importar el paquete oficial de stripe desde PyPI
+    stripe = importlib.import_module('stripe')
+    
+    # Verificar que stripe sea el módulo correcto (tiene __version__ y checkout)
+    if hasattr(stripe, '__version__') and hasattr(stripe, 'checkout') and hasattr(stripe, 'error'):
         STRIPE_IMPORTED = True
         # Log de la versión para debugging
-        import sys
-        if 'stripe' in sys.modules:
-            stripe_version = getattr(stripe, '__version__', 'unknown')
-            print(f"✅ Stripe importado correctamente - Versión: {stripe_version}")
+        stripe_version = getattr(stripe, '__version__', 'unknown')
+        print(f"✅ Stripe importado correctamente - Versión: {stripe_version}")
     else:
         STRIPE_IMPORTED = False
         stripe = None
-        print("⚠️ WARNING: El módulo stripe importado no parece ser el paquete oficial")
+        print(f"⚠️ WARNING: El módulo stripe importado no parece ser el paquete oficial (tiene __version__: {hasattr(stripe, '__version__')}, tiene checkout: {hasattr(stripe, 'checkout') if stripe else None)}")
 except ImportError as e:
     STRIPE_IMPORTED = False
     stripe = None
