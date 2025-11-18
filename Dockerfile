@@ -14,7 +14,10 @@ COPY requirements.txt .
 COPY requirements.ingest.txt .
 
 # Instalar dependencias de Python
+# IMPORTANTE: Instalar stripe primero con versión específica para evitar conflictos
 RUN pip install --upgrade pip && \
+    pip uninstall -y stripe || true && \
+    pip install --no-cache-dir "stripe>=8.0.0,<10.0.0" && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copiar código de la aplicación
