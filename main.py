@@ -78,17 +78,17 @@ try:
     from lib.stripe_config import get_stripe_price_id, is_valid_plan_code, get_plan_code_from_price_id, STRIPE_WEBHOOK_SECRET
     # Importar stripe - lib.stripe_config ya lo importó correctamente, solo lo obtenemos de sys.modules
     import stripe
-    # Verificar que stripe.api_key esté configurado y que stripe tenga los atributos necesarios
+    # Verificar que stripe.api_key esté configurado y que stripe tenga checkout
     if hasattr(stripe, 'api_key') and stripe.api_key:
-        # Verificar que stripe tenga los atributos necesarios (checkout, error)
-        if hasattr(stripe, 'checkout') and hasattr(stripe, 'error'):
+        # Verificar que stripe tenga checkout (error es opcional en algunas versiones)
+        if hasattr(stripe, 'checkout'):
             STRIPE_AVAILABLE = True
         else:
-            logger.warning("⚠️ Stripe importado pero no tiene los atributos esperados (checkout, error). Verifica la versión de stripe.")
+            logger.warning("⚠️ Stripe importado pero no tiene checkout. Verifica la versión de stripe.")
             STRIPE_AVAILABLE = False
     else:
         STRIPE_AVAILABLE = False
-        logger.warning("⚠️ Stripe importado pero STRIPE_SECRET_KEY no está configurada")
+        logger.warning("⚠️ Stripe importado pero STRIPE_SECRET_KEY no está configurada en Railway. Verifica las variables de entorno.")
 except (ImportError, ValueError, Exception) as e:
     STRIPE_AVAILABLE = False
     STRIPE_WEBHOOK_SECRET = None

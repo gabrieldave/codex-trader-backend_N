@@ -38,12 +38,16 @@ try:
         stripe_package = __import__('stripe', fromlist=['__version__'])
         stripe = stripe_package
         
-        # Verificar que stripe sea el paquete oficial (tiene checkout y error)
-        # __version__ puede no estar disponible en algunas versiones, así que es opcional
-        if hasattr(stripe, 'checkout') and hasattr(stripe, 'error'):
+        # Verificar que stripe sea el paquete oficial (tiene checkout)
+        # __version__ y error pueden no estar disponibles en algunas versiones, así que solo verificamos checkout
+        if hasattr(stripe, 'checkout'):
             STRIPE_IMPORTED = True
             stripe_version = getattr(stripe, '__version__', stripe_version_from_pkg or 'unknown')
-            print(f"✅ Stripe importado correctamente - Versión: {stripe_version}")
+            has_error = hasattr(stripe, 'error')
+            if has_error:
+                print(f"✅ Stripe importado correctamente - Versión: {stripe_version}")
+            else:
+                print(f"✅ Stripe importado correctamente - Versión: {stripe_version} (sin módulo error)")
         else:
             STRIPE_IMPORTED = False
             has_version = hasattr(stripe, '__version__')
@@ -55,11 +59,15 @@ try:
         # Si __import__ falla, intentar con importlib
         import importlib
         stripe = importlib.import_module('stripe')
-        # Verificar checkout y error (__version__ es opcional)
-        if hasattr(stripe, 'checkout') and hasattr(stripe, 'error'):
+        # Verificar checkout (__version__ y error son opcionales)
+        if hasattr(stripe, 'checkout'):
             STRIPE_IMPORTED = True
             stripe_version = getattr(stripe, '__version__', stripe_version_from_pkg or 'unknown')
-            print(f"✅ Stripe importado correctamente - Versión: {stripe_version}")
+            has_error = hasattr(stripe, 'error')
+            if has_error:
+                print(f"✅ Stripe importado correctamente - Versión: {stripe_version}")
+            else:
+                print(f"✅ Stripe importado correctamente - Versión: {stripe_version} (sin módulo error)")
         else:
             STRIPE_IMPORTED = False
             has_checkout = hasattr(stripe, 'checkout')
