@@ -4952,7 +4952,8 @@ async def notify_user_registration(
             
             # Construir enlaces usando FRONTEND_URL (normalizar sin barra final)
             base_url = FRONTEND_URL.rstrip('/')
-            referral_url = f"{base_url}/registro?ref={referral_code}"
+            # Usar build_referral_url para consistencia (usa /?ref= en lugar de /registro?ref=)
+            referral_url = build_referral_url(referral_code)
             app_url = base_url  # Usar la raíz del sitio, no /app
             
             # Obtener nombre del usuario desde el email (parte antes del @)
