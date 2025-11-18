@@ -24,20 +24,23 @@ try:
     # Importar el paquete oficial de stripe desde PyPI usando import absoluto
     # Usar __import__ para forzar importación del paquete de PyPI, no del módulo local
     try:
-        import pkg_resources
-        # Verificar que el paquete stripe esté instalado
+        # Intentar obtener versión desde pkg_resources (puede estar deprecado)
+        stripe_version_from_pkg = None
         try:
+            import pkg_resources
             stripe_dist = pkg_resources.get_distribution('stripe')
             stripe_version_from_pkg = stripe_dist.version
         except:
-            stripe_version_from_pkg = None
+            # pkg_resources puede no estar disponible, ignorar
+            pass
         
         # Importar usando __import__ con fromlist para asegurar que es el paquete, no el módulo
         stripe_package = __import__('stripe', fromlist=['__version__'])
         stripe = stripe_package
         
-        # Verificar que stripe sea el paquete oficial (tiene __version__ y checkout)
-        if hasattr(stripe, '__version__') and hasattr(stripe, 'checkout') and hasattr(stripe, 'error'):
+        # Verificar que stripe sea el paquete oficial (tiene checkout y error)
+        # __version__ puede no estar disponible en algunas versiones, así que es opcional
+        if hasattr(stripe, 'checkout') and hasattr(stripe, 'error'):
             STRIPE_IMPORTED = True
             stripe_version = getattr(stripe, '__version__', stripe_version_from_pkg or 'unknown')
             print(f"✅ Stripe importado correctamente - Versión: {stripe_version}")
@@ -45,20 +48,24 @@ try:
             STRIPE_IMPORTED = False
             has_version = hasattr(stripe, '__version__')
             has_checkout = hasattr(stripe, 'checkout')
+            has_error = hasattr(stripe, 'error')
             stripe = None
-            print(f"⚠️ WARNING: El módulo stripe importado no parece ser el paquete oficial (tiene __version__: {has_version}, tiene checkout: {has_checkout})")
+            print(f"⚠️ WARNING: El módulo stripe importado no parece ser el paquete oficial (tiene __version__: {has_version}, tiene checkout: {has_checkout}, tiene error: {has_error})")
     except (ImportError, Exception):
         # Si __import__ falla, intentar con importlib
         import importlib
         stripe = importlib.import_module('stripe')
-        if hasattr(stripe, '__version__') and hasattr(stripe, 'checkout') and hasattr(stripe, 'error'):
+        # Verificar checkout y error (__version__ es opcional)
+        if hasattr(stripe, 'checkout') and hasattr(stripe, 'error'):
             STRIPE_IMPORTED = True
-            stripe_version = getattr(stripe, '__version__', 'unknown')
+            stripe_version = getattr(stripe, '__version__', stripe_version_from_pkg or 'unknown')
             print(f"✅ Stripe importado correctamente - Versión: {stripe_version}")
         else:
             STRIPE_IMPORTED = False
+            has_checkout = hasattr(stripe, 'checkout')
+            has_error = hasattr(stripe, 'error')
             stripe = None
-            print("⚠️ WARNING: El módulo stripe importado no parece ser el paquete oficial")
+            print(f"⚠️ WARNING: El módulo stripe importado no parece ser el paquete oficial (tiene checkout: {has_checkout}, tiene error: {has_error})")
 except ImportError as e:
     STRIPE_IMPORTED = False
     stripe = None
