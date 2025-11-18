@@ -3278,6 +3278,7 @@ async def handle_checkout_session_completed(session: dict):
                 print(f"⚠️ Error al registrar pago inicial (no crítico): {payment_error}")
             
             # IMPORTANTE: Enviar email al admin cuando hay una primera compra (checkout.session.completed)
+            # IMPORTANTE: Obtener información del usuario y plan ANTES de enviar emails
             try:
                 from lib.email import send_admin_email
                 from datetime import datetime
@@ -3288,11 +3289,28 @@ async def handle_checkout_session_completed(session: dict):
                 user_email = user_info_response.data[0].get("email") if user_info_response.data else "N/A"
                 
                 plan_name = plan_code
+                plan_price = None
                 if plan_code:
                     from plans import get_plan_by_code
                     plan_info = get_plan_by_code(plan_code)
                     if plan_info:
                         plan_name = plan_info.name
+                        plan_price = plan_info.price_usd
+                
+                # Obtener monto desde Stripe si está disponible
+                amount_usd = plan_price  # Fallback al precio del plan
+                if subscription_id:
+                    try:
+                        subscription = stripe.Subscription.retrieve(subscription_id)
+                        if subscription.latest_invoice:
+                            invoice_obj = stripe.Invoice.retrieve(subscription.latest_invoice)
+                            if invoice_obj.amount_paid:
+                                amount_usd = invoice_obj.amount_paid / 100.0
+                    except Exception as e:
+                        logger.warning(f"No se pudo obtener monto desde Stripe, usando precio del plan: {e}")
+                
+                if amount_usd is None:
+                    amount_usd = plan_price or 0.0
                 
                 def send_admin_checkout_email():
                     try:
@@ -3352,10 +3370,113 @@ async def handle_checkout_session_completed(session: dict):
                     except Exception as e:
                         print(f"⚠️ Error al enviar email al admin por checkout completado: {e}")
                 
+                # IMPORTANTE: También enviar email al usuario confirmando su compra y tokens recibidos
+                def send_user_checkout_email():
+                    try:
+                        from lib.email import send_email
+                        from datetime import datetime
+                        import os
+                        
+                        # Obtener información del plan
+                        plan_name = plan_code
+                        plan_price = None
+                        if plan_code:
+                            from plans import get_plan_by_code
+                            plan_info = get_plan_by_code(plan_code)
+                            if plan_info:
+                                plan_name = plan_info.name
+                                plan_price = plan_info.price_usd
+                        
+                        # Obtener fecha de renovación
+                        next_renewal_str = "N/A"
+                        if current_period_end:
+                            from datetime import datetime
+                            next_renewal = datetime.fromtimestamp(current_period_end)
+                            next_renewal_str = next_renewal.strftime('%d/%m/%Y')
+                        
+                        # Construir URL del frontend
+                        frontend_url = os.getenv("FRONTEND_URL", "https://www.codextrader.tech").strip('"').strip("'").strip()
+                        app_url = frontend_url.rstrip('/')
+                        
+                        user_html = f"""
+                        <html>
+                        <body style="font-family: Arial, sans-serif; line-height: 1.8; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+                            <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+                                <h1 style="color: white; margin: 0; font-size: 28px;">¡Pago Exitoso! 🎉</h1>
+                            </div>
+                            
+                            <div style="background: #ffffff; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                                <p style="font-size: 16px; margin-bottom: 20px;">
+                                    Hola <strong>{user_email}</strong>,
+                                </p>
+                                
+                                <p style="font-size: 16px; margin-bottom: 20px;">
+                                    ¡Gracias por tu compra! Tu suscripción a <strong>{plan_name}</strong> ha sido activada exitosamente.
+                                </p>
+                                
+                                <div style="background: #f0fdf4; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
+                                    <h3 style="color: #059669; margin-top: 0;">Detalles de tu suscripción:</h3>
+                                    <ul style="list-style: none; padding: 0; margin: 0;">
+                                        <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
+                                            <strong style="color: #059669;">Plan:</strong> 
+                                            <span style="color: #333; font-weight: bold;">{plan_name}</span>
+                                        </li>
+                                        <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
+                                            <strong style="color: #059669;">Tokens recibidos:</strong> 
+                                            <span style="color: #10b981; font-weight: bold; font-size: 18px;">{tokens_per_month:,} tokens</span>
+                                        </li>
+                                        <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
+                                            <strong style="color: #059669;">Monto pagado:</strong> 
+                                            <span style="color: #333; font-weight: bold;">${plan_price:.2f} USD</span>
+                                        </li>
+                                        <li style="margin-bottom: 0;">
+                                            <strong style="color: #059669;">Próxima renovación:</strong> 
+                                            <span style="color: #333;">{next_renewal_str}</span>
+                                        </li>
+                                    </ul>
+                                </div>
+                                
+                                <div style="text-align: center; margin: 30px 0;">
+                                    <a href="{app_url}" style="display: inline-block; background: #10b981; color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px;">
+                                        🚀 Empezar a usar Codex Trader
+                                    </a>
+                                </div>
+                                
+                                <p style="font-size: 14px; color: #666; margin-top: 30px;">
+                                    <strong>¿Qué puedes hacer ahora?</strong>
+                                </p>
+                                <ul style="color: #333; line-height: 1.8;">
+                                    <li>Hacer consultas al asistente de IA especializado en trading</li>
+                                    <li>Acceder a tu biblioteca profesional de contenido</li>
+                                    <li>Ver tu uso de tokens en el panel de cuenta</li>
+                                </ul>
+                                
+                                <p style="font-size: 12px; color: #666; margin-top: 30px; text-align: center; border-top: 1px solid #e5e7eb; padding-top: 20px;">
+                                    Si no reconoces este pago, contáctanos respondiendo a este correo.
+                                </p>
+                            </div>
+                        </body>
+                        </html>
+                        """
+                        send_email(
+                            to=user_email,
+                            subject=f"¡Pago exitoso! Tu plan {plan_name} está activo - Codex Trader",
+                            html=user_html
+                        )
+                        logger.info(f"✅ Email de confirmación de compra enviado a {user_email}")
+                    except Exception as e:
+                        logger.error(f"❌ Error al enviar email al usuario por checkout completado: {e}")
+                        print(f"⚠️ Error al enviar email al usuario por checkout completado: {e}")
+                
+                # Enviar emails en background (no bloquea)
                 admin_thread = threading.Thread(target=send_admin_checkout_email, daemon=True)
                 admin_thread.start()
+                
+                user_thread = threading.Thread(target=send_user_checkout_email, daemon=True)
+                user_thread.start()
             except Exception as email_error:
-                print(f"⚠️ Error al preparar email al admin por checkout completado: {email_error}")
+                print(f"⚠️ Error al preparar emails por checkout completado: {email_error}")
+                logger.error(f"❌ Error al preparar emails por checkout completado: {email_error}")
         else:
             print(f"⚠️ No se encontró perfil para usuario {user_id}")
             
