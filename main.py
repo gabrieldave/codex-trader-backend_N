@@ -3024,13 +3024,25 @@ async def stripe_webhook(request: Request):
             
         return {"status": "success"}
         
-    except stripe.error.SignatureVerificationError as e:
-        logger.error(f"❌ Error de firma webhook: {e}")
-        return JSONResponse(
-            content={"status": "invalid_signature"},
-            status_code=400
-        )
     except Exception as e:
+        # Verificar si es un error de firma de Stripe (puede no tener stripe.error en algunas versiones)
+        error_type = type(e).__name__
+        error_str = str(e).lower()
+        if hasattr(stripe, 'error') and hasattr(stripe.error, 'SignatureVerificationError'):
+            # Si stripe.error está disponible, verificar tipo específico
+            if isinstance(e, stripe.error.SignatureVerificationError):
+                logger.error(f"❌ Error de firma webhook: {e}")
+                return JSONResponse(
+                    content={"status": "invalid_signature"},
+                    status_code=400
+                )
+        elif 'SignatureVerificationError' in error_type or ('signature' in error_str and 'webhook' in error_str):
+            logger.error(f"❌ Error de firma webhook: {e}")
+            return JSONResponse(
+                content={"status": "invalid_signature"},
+                status_code=400
+            )
+        
         logger.error(f"❌ Error webhook: {e}")
         return JSONResponse(
             content={"status": "error", "message": str(e)},
