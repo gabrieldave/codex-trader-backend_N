@@ -76,10 +76,16 @@ if _runtime_env:
 # Importar módulo de Stripe (opcional, solo si está configurado)
 try:
     from lib.stripe import get_stripe_price_id, is_valid_plan_code, get_plan_code_from_price_id, STRIPE_WEBHOOK_SECRET
+    # Importar stripe directamente para asegurar que tenemos el módulo completo
     import stripe
-    # Verificar que stripe.api_key esté configurado
+    # Verificar que stripe.api_key esté configurado y que stripe tenga los atributos necesarios
     if hasattr(stripe, 'api_key') and stripe.api_key:
-        STRIPE_AVAILABLE = True
+        # Verificar que stripe tenga los atributos necesarios (checkout, error)
+        if hasattr(stripe, 'checkout') and hasattr(stripe, 'error'):
+            STRIPE_AVAILABLE = True
+        else:
+            logger.warning("⚠️ Stripe importado pero no tiene los atributos esperados (checkout, error). Verifica la versión de stripe.")
+            STRIPE_AVAILABLE = False
     else:
         STRIPE_AVAILABLE = False
         logger.warning("⚠️ Stripe importado pero STRIPE_SECRET_KEY no está configurada")
@@ -2963,12 +2969,14 @@ async def create_checkout_session(
         
     except HTTPException:
         raise
-    except stripe.error.StripeError as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error de Stripe: {str(e)}"
-        )
     except Exception as e:
+        # Verificar si es un error de Stripe (manejar sin stripe.error si no está disponible)
+        error_type = type(e).__name__
+        if 'Stripe' in error_type or 'stripe' in str(type(e)).lower():
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error de Stripe: {str(e)}"
+            )
         raise HTTPException(
             status_code=500,
             detail=f"Error al crear sesión de checkout: {str(e)}"

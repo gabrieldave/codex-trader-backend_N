@@ -14,6 +14,6 @@ uvicorn[standard]
 python-dotenv
 supabase
 litellm
-stripe
+stripe>=7.0.0
 sqlalchemy
 vecs
