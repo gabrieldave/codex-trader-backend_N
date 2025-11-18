@@ -5095,19 +5095,29 @@ async def notify_user_registration(
                         logger.error("[ERROR] Error al enviar email de bienvenida (revisa logs anteriores)")
                         print(f"   [ERROR] Error al enviar email de bienvenida (revisa logs anteriores)")
                         print(f"   [ERROR] Verifica SMTP_AVAILABLE y configuración de email")
+                        # NO marcar cache ni flag si el email falló
+                        raise Exception("Email de bienvenida falló al enviarse")
                 except Exception as e:
                     logger.error(f"[ERROR] ERROR al enviar email de bienvenida: {e}", exc_info=True)
                     print(f"   [ERROR] ERROR al enviar email de bienvenida: {e}")
                     import traceback
                     traceback.print_exc()
+                    # NO marcar cache ni flag si el email falló
+                    raise  # Re-lanzar el error para que no se marque el cache
             logger.info("[EMAIL] ========================================")
             print(f"   [EMAIL] ========================================")
         except Exception as welcome_error:
-            # No es crítico si falla el email de bienvenida
-            logger.warning(f"[WARNING] No se pudo enviar email de bienvenida (no critico): {welcome_error}")
-            print(f"   [WARNING] No se pudo enviar email de bienvenida (no critico): {welcome_error}")
+            # Si falla el email de bienvenida, NO marcar cache ni flag
+            logger.error(f"[ERROR] No se pudo enviar email de bienvenida: {welcome_error}")
+            print(f"   [ERROR] No se pudo enviar email de bienvenida: {welcome_error}")
+            # NO marcar cache - permitir reintentos
+            return {
+                "success": False,
+                "message": f"Error al enviar email de bienvenida: {str(welcome_error)}",
+                "error": "smtp_error"
+            }
         
-        # Marcar en cache que los emails fueron enviados (solo si llegamos aquí sin errores críticos)
+        # Marcar en cache que los emails fueron enviados (SOLO si llegamos aquí sin errores)
         try:
             notify_user_registration._email_cache[cache_key] = time.time()
             logger.info(f"[OK] Emails enviados y marcados en cache para {user_email}")
