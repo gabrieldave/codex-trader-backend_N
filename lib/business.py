@@ -5,7 +5,7 @@ para garantizar consistencia en toda la aplicación.
 """
 
 # Tokens iniciales para nuevos usuarios
-INITIAL_FREE_TOKENS = 15000  # Tokens iniciales al registrarse
+INITIAL_FREE_TOKENS = 20000  # Tokens iniciales al registrarse
 
 # Bonos de referidos
 REF_INVITED_BONUS_TOKENS = 5000  # Tokens para el invitado al pagar primer plan
