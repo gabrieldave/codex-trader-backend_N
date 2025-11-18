@@ -5,7 +5,7 @@ Monitorea usuarios recientes y detecta si los emails no se están enviando
 
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -61,7 +61,7 @@ except Exception as e:
     sys.exit(1)
 
 # Configurar umbral de tiempo (usuarios creados en las últimas 2 horas)
-umbral_tiempo = datetime.now(datetime.UTC).replace(tzinfo=None) - timedelta(hours=2)
+umbral_tiempo = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=2)
 umbral_str = umbral_tiempo.isoformat()
 
 print("1. ANALISIS DE USUARIOS RECIENTES")
@@ -111,8 +111,8 @@ try:
             
             # Calcular tiempo desde creación
             try:
-                    created_dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
-                    tiempo_desde_creacion = datetime.now(datetime.UTC).replace(tzinfo=None) - created_dt.replace(tzinfo=None)
+                created_dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                tiempo_desde_creacion = datetime.now(timezone.utc).replace(tzinfo=None) - created_dt.replace(tzinfo=None)
                 minutos = int(tiempo_desde_creacion.total_seconds() / 60)
             except:
                 minutos = "N/A"
