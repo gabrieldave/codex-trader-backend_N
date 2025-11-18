@@ -115,6 +115,10 @@ is_production = os.getenv("RENDER") or os.getenv("RAILWAY_ENVIRONMENT") or os.ge
 default_frontend_url = "https://codextrader.tech" if is_production else "http://localhost:3000"
 FRONTEND_URL = get_env("FRONTEND_URL") or default_frontend_url
 
+# URL del backend (opcional, para construir URLs absolutas si es necesario)
+default_backend_url = "https://api.codextrader.tech" if is_production else "http://localhost:8000"
+BACKEND_URL = get_env("BACKEND_URL") or default_backend_url
+
 # ============================================================================
 # LÓGICA PARA OBTENER URL REST DE SUPABASE
 # ============================================================================
@@ -631,6 +635,8 @@ else:
     logger.info("⚠️  RAG: DESACTIVADO (SUPABASE_DB_URL no configurada)")
 logger.info(f"{'✅' if STRIPE_AVAILABLE else '⚠️ '} Stripe: {'disponible' if STRIPE_AVAILABLE else 'no configurado'}")
 logger.info("✅ Hash/Checksum: OK (Sistema anti-duplicados activo)")
+logger.info(f"🌐 Backend URL: {BACKEND_URL}")
+logger.info(f"🌐 Frontend URL: {FRONTEND_URL}")
 logger.info("=" * 80)
 
 # Inicializar FastAPI

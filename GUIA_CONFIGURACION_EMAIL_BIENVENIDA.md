@@ -128,6 +128,8 @@ Deberías ver:
 ✅ Email de bienvenida solicitado correctamente desde onAuthStateChange
 ```
 
+**⚠️ IMPORTANTE:** Asegúrate de que el frontend esté configurado para usar `https://api.codextrader.tech` como URL del backend. Ver la guía `CONFIGURAR_URL_BACKEND_FRONTEND.md` para más detalles.
+
 **Si NO ves estos logs:**
 - El frontend no está detectando la confirmación correctamente
 - Verifica que el callback `/auth/callback` esté funcionando
@@ -317,6 +319,7 @@ Después de configurar todo, verifica:
 - `backend/lib/email.py` - Funciones de envío de email
 - `frontend/app/auth/callback/route.ts` - Callback de confirmación
 - `frontend/app/page.tsx` - Detección de confirmación y llamada al endpoint
+
 
 
 

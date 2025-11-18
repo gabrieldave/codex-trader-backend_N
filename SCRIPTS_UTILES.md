@@ -307,3 +307,4 @@ python verificar_limites_supabase.py
 *Última actualización: Enero 2025*
 
 
+

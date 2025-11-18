@@ -707,6 +707,10 @@ ANTHROPIC_API_KEY=tu-anthropic-api-key
 GOOGLE_API_KEY=tu-google-api-key
 COHERE_API_KEY=tu-cohere-api-key
 
+# Opcional: URLs del frontend y backend
+FRONTEND_URL=https://www.codextrader.tech
+BACKEND_URL=https://api.codextrader.tech
+
 # Opcional: Configuración de ingesta
 MAX_WORKERS=15
 EMBEDDING_BATCH_SIZE=30
