@@ -6,12 +6,29 @@ import os
 from typing import Dict, Optional
 
 # Intentar importar stripe
+# IMPORTANTE: Importar directamente desde el paquete oficial
 try:
     import stripe
-    STRIPE_IMPORTED = True
-except ImportError:
+    # Verificar que stripe sea el módulo correcto (tiene __version__)
+    if hasattr(stripe, '__version__'):
+        STRIPE_IMPORTED = True
+        # Log de la versión para debugging
+        import sys
+        if 'stripe' in sys.modules:
+            stripe_version = getattr(stripe, '__version__', 'unknown')
+            print(f"✅ Stripe importado correctamente - Versión: {stripe_version}")
+    else:
+        STRIPE_IMPORTED = False
+        stripe = None
+        print("⚠️ WARNING: El módulo stripe importado no parece ser el paquete oficial")
+except ImportError as e:
     STRIPE_IMPORTED = False
     stripe = None
+    print(f"⚠️ WARNING: No se pudo importar stripe: {e}")
+except Exception as e:
+    STRIPE_IMPORTED = False
+    stripe = None
+    print(f"⚠️ WARNING: Error al importar stripe: {e}")
 
 # Obtener la secret key de Stripe desde variables de entorno
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip('"').strip("'").strip()
