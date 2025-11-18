@@ -642,14 +642,7 @@ logger.info("=" * 80)
 # Inicializar FastAPI
 app = FastAPI(title=config.API_TITLE, description=config.API_DESCRIPTION)
 
-# Importar y registrar router de administración
-try:
-    from admin_router import admin_router
-    app.include_router(admin_router)
-    logger.info("✅ Router de administración registrado")
-except Exception as e:
-    logger.warning(f"⚠️ No se pudo registrar router de administración: {e}")
-
+# IMPORTANTE: Configurar CORS PRIMERO, antes de cualquier router o middleware
 # Configurar CORS para permitir peticiones desde el frontend
 # Define los orígenes permitidos (incluyendo variaciones comunes)
 origins = [
@@ -673,6 +666,7 @@ if FRONTEND_URL:
 
 logger.info(f"🌐 CORS configurado - Orígenes permitidos: {origins}")
 
+# IMPORTANTE: Configurar CORS ANTES de cualquier otro middleware o router
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -681,6 +675,33 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+# Importar y registrar router de administración (después de CORS)
+try:
+    from admin_router import admin_router
+    app.include_router(admin_router)
+    logger.info("✅ Router de administración registrado")
+except Exception as e:
+    logger.warning(f"⚠️ No se pudo registrar router de administración: {e}")
+
+# Endpoint OPTIONS explícito para preflight requests
+@app.options("/{full_path:path}")
+async def options_handler(full_path: str, request: Request):
+    """Maneja requests OPTIONS (preflight) para CORS"""
+    from fastapi.responses import Response
+    origin = request.headers.get("origin")
+    if origin in origins:
+        return Response(
+            content="OK",
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Credentials": "true",
+            }
+        )
+    return Response(content="OK", status_code=200)
 
 # Función helper para crear un cliente de Supabase con el token del usuario
 def get_user_supabase_client(token: str):
