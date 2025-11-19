@@ -18,7 +18,8 @@ GOOGLE_API_KEY = None
 COHERE_API_KEY = None
 
 # Modelo de visión para análisis de imágenes
-VISION_MODEL = "gemini-1.5-flash"
+# Nombres posibles: "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-pro-vision", "gemini-1.5-pro"
+VISION_MODEL = "gemini-1.5-flash-latest"
 
 
 def init_shared_config(
