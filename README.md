@@ -21,7 +21,7 @@ El sistema resuelve el problema de **indexar grandes colecciones de libros/docum
 
 - **Python 3.x** - Lenguaje principal
 - **LlamaIndex** - Framework para RAG y procesamiento de documentos
-- **OpenAI** - Embeddings con modelo `text-embedding-3-small` (1536 dimensiones)
+- **SentenceTransformer** - Embeddings locales con modelo `all-MiniLM-L6-v2` (384 dimensiones)
 - **Supabase** - Base de datos PostgreSQL con extensión pgvector para almacenamiento vectorial
 - **FastAPI** - API REST para consultas RAG
 - **LiteLLM** - Abstracción para usar múltiples modelos de IA (OpenAI, Deepseek, Claude, Gemini, etc.)
@@ -70,10 +70,10 @@ El sistema funciona en dos fases principales:
 
 5️⃣ GENERAR EMBEDDINGS
    ↓
-   OpenAIEmbedding(model="text-embedding-3-small")
-   • Envía chunks en batches de 30-40
-   • Genera embeddings de 1536 dimensiones
-   • Controla rate limits (70% de Tier 3)
+   SentenceTransformer('all-MiniLM-L6-v2')
+   • Ejecución local en el servidor
+   • Genera embeddings de 384 dimensiones
+   • Sin costo por token (procesamiento local)
 
 6️⃣ GUARDAR EN SUPABASE
    ↓
@@ -96,15 +96,16 @@ El sistema funciona en dos fases principales:
 
 2️⃣ GENERAR EMBEDDING DE LA PREGUNTA
    ↓
-   OpenAIEmbedding(query)
-   • Mismo modelo: text-embedding-3-small
-   • 1536 dimensiones
+   SentenceTransformer('all-MiniLM-L6-v2')
+   • Ejecución local en el servidor
+   • 384 dimensiones
 
 3️⃣ BÚSQUEDA SEMÁNTICA
    ↓
-   VectorStoreIndex.as_retriever(similarity_top_k=5)
-   • Busca los 5 chunks más similares
-   • Usa distancia coseno en pgvector
+   match_documents_384(query_embedding, match_count)
+   • Función RPC en Supabase
+   • Busca los chunks más similares usando distancia coseno
+   • Tabla: book_chunks
 
 4️⃣ CONSTRUIR CONTEXTO
    ↓
@@ -133,7 +134,8 @@ El sistema funciona en dos fases principales:
                                                    ↓
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │   Consulta   │ ←── │   Supabase   │ ←── │  Embeddings  │
-│   RAG API    │     │  (pgvector)  │     │  (1536 dims) │
+│   RAG API    │     │  (pgvector)  │     │  (384 dims)  │
+│              │     │              │     │  (Local)     │
 └──────────────┘     └──────────────┘     └──────────────┘
 ```
 
@@ -197,42 +199,56 @@ text_splitter = SentenceSplitter(
 
 ### 3.4. Modelo de Embeddings
 
-**Modelo**: `text-embedding-3-small` de OpenAI
+**Modelo**: `all-MiniLM-L6-v2` de SentenceTransformer (ejecución local)
 
 **Características**:
-- **Dimensiones**: 1536
-- **Costo**: Muy económico (mucho más barato que `text-embedding-3-large`)
-- **Calidad**: Excelente para la mayoría de casos de uso
-- **Velocidad**: Muy rápido
+- **Dimensiones**: 384
+- **Costo**: Sin costo (procesamiento local en el servidor)
+- **Calidad**: Excelente para búsqueda semántica
+- **Velocidad**: Muy rápido (sin latencia de red)
+- **Ejecución**: Local en el servidor (no requiere API externa)
 
 **¿Por qué este modelo?**
-- Balance perfecto entre costo y calidad
-- Suficiente para búsqueda semántica en libros
+- Sin costo por token (procesamiento local)
+- Excelente calidad para búsqueda semántica
 - Compatible con pgvector en Supabase
+- No depende de límites de API externa
+- Mayor control y privacidad
 
 **Código**:
 ```python
-embed_model = OpenAIEmbedding(model="text-embedding-3-small")
+from sentence_transformers import SentenceTransformer
+
+local_embedder = SentenceTransformer("all-MiniLM-L6-v2", device="cuda")
+# O sin GPU:
+local_embedder = SentenceTransformer("all-MiniLM-L6-v2")
 ```
 
-### 3.5. Batch Size de Embeddings
+### 3.5. Generación de Embeddings
 
-**Configuración**: 30-40 chunks por request (por defecto: 30)
+**Procesamiento**: Local en el servidor (sin API externa)
 
-**¿Por qué este batch size?**
-- Optimizado para Tier 3 de OpenAI
-- Respeta límites de RPM y TPM
-- Balance entre velocidad y control de rate limits
+**Características**:
+- **Sin límites de API**: No hay límites de RPM/TPM para embeddings
+- **Procesamiento en batch**: Los chunks se procesan en lotes para eficiencia
+- **Sin costo**: No hay costo por token o request
+- **Velocidad**: Depende del hardware del servidor (CPU/GPU)
 
-**Control de rate limits**:
-- El sistema usa un `RateLimiter` que controla:
-  - **RPM**: Requests por minuto
-  - **TPM**: Tokens por minuto
-- Objetivo: Usar solo **70% de la capacidad** de Tier 3
+**Ventajas**:
+- No requiere API key de OpenAI para embeddings
+- Sin preocupaciones por rate limits
+- Mayor privacidad (datos no salen del servidor)
+- Control total sobre el procesamiento
 
 **Código**:
 ```python
-EMBEDDING_BATCH_SIZE = 30  # chunks por request
+from sentence_transformers import SentenceTransformer
+
+# Inicializar embedder local
+local_embedder = SentenceTransformer("all-MiniLM-L6-v2", device="cuda")
+
+# Generar embeddings
+embeddings = local_embedder.encode(chunks, show_progress_bar=False)
 ```
 
 ### 3.6. Workers y Procesamiento Paralelo
@@ -245,9 +261,9 @@ EMBEDDING_BATCH_SIZE = 30  # chunks por request
 - Cada worker procesa un archivo a la vez
 
 **¿Por qué 15 workers?**
-- Balance entre velocidad y control de recursos
-- Evita saturar la API de OpenAI
-- Mantiene el uso por debajo del 70% de Tier 3
+- Balance entre velocidad y uso de recursos del servidor
+- Optimizado para procesamiento local de embeddings
+- No hay límites de API que respetar (procesamiento local)
 
 **Código**:
 ```python
@@ -257,68 +273,45 @@ executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
 ---
 
-## 4. Control de Límites (Tier 3) y Rendimiento
+## 4. Rendimiento y Procesamiento Local
 
-### 4.1. Límites de OpenAI Tier 3
+### 4.1. Procesamiento Local de Embeddings
 
-El sistema está configurado para usar **OpenAI Tier 3** con los siguientes límites:
+El sistema usa **embeddings locales** con SentenceTransformer, lo que significa:
 
-- **RPM (Requests Per Minute)**: **5,000**
-- **TPM (Tokens Per Minute)**: **5,000,000**
-- **TPD (Tokens Per Day)**: **100,000,000**
+- **Sin límites de API**: No hay límites de RPM/TPM para embeddings
+- **Sin costo por token**: El procesamiento es completamente local
+- **Mayor velocidad**: Sin latencia de red para generar embeddings
+- **Mayor privacidad**: Los datos no salen del servidor
 
-### 4.2. Objetivo de Rendimiento: 70% de Capacidad
+### 4.2. Rendimiento
 
-**¿Por qué usar solo 70%?**
-- **Margen de seguridad**: Evita exceder límites por picos inesperados
-- **Estabilidad**: Reduce errores 429 (rate limit exceeded)
-- **Confiabilidad**: Permite procesar archivos grandes sin problemas
+**Factores que afectan el rendimiento**:
+- **Hardware del servidor**: CPU/GPU disponible
+- **Número de workers**: Paralelización del procesamiento
+- **Tamaño de los chunks**: Más chunks = más embeddings a generar
+- **Carga del servidor**: Otros procesos ejecutándose
 
-**Objetivos**:
-- **RPM objetivo**: **3,500** (70% de 5,000)
-- **TPM objetivo**: **3,500,000** (70% de 5,000,000)
+**Optimizaciones**:
+- Uso de GPU cuando está disponible (`device="cuda"`)
+- Procesamiento en batch para eficiencia
+- Paralelización con múltiples workers
 
-### 4.3. Control de Rate Limits
-
-El sistema implementa un **RateLimiter** que:
-
-1. **Monitorea RPM y TPM en tiempo real**
-2. **Espera si es necesario** antes de hacer requests
-3. **Maneja errores 429** con backoff exponencial
-4. **Reintenta automáticamente** (máximo 5 intentos)
-
-**Backoff exponencial**:
-- Intento 1: Espera 1 segundo
-- Intento 2: Espera 2 segundos
-- Intento 3: Espera 4 segundos
-- Intento 4: Espera 8 segundos
-- Intento 5: Espera 16 segundos
-
-**Código**:
-```python
-class RateLimiter:
-    def wait_if_needed(self):
-        # Verifica RPM y TPM
-        # Espera si es necesario
-        # Responde errores 429 con backoff
-```
-
-### 4.4. Distribución del Trabajo
+### 4.3. Distribución del Trabajo
 
 El sistema distribuye el trabajo de la siguiente manera:
 
 1. **Múltiples workers** procesan archivos en paralelo
 2. **Cada worker** procesa un archivo completo
 3. **Cada archivo** se divide en chunks
-4. **Cada batch** de chunks se envía a OpenAI
-5. **RateLimiter** controla la velocidad global
+4. **Cada batch** de chunks se procesa localmente con SentenceTransformer
+5. **Los embeddings** se guardan directamente en Supabase
 
 **Ejemplo**:
 - 15 workers procesando en paralelo
-- Cada worker procesa ~10 archivos/minuto
-- Total: ~150 archivos/minuto
-- Chunks: ~15,000 chunks/minuto
-- RPM: ~500 requests/minuto (muy por debajo de 3,500)
+- Cada worker procesa archivos según capacidad del servidor
+- Embeddings generados localmente sin límites de API
+- Sin preocupaciones por rate limits o costos de API
 
 ---
 
@@ -457,14 +450,20 @@ if check_chunk_exists(chunk_id, collection_name):
 - `idx_documents_filename`: Búsqueda rápida por nombre de archivo
 - `idx_documents_created_at`: Ordenamiento por fecha
 
-### 6.2. Tabla `vecs.knowledge` (Colección de Vectores)
+### 6.2. Tabla `book_chunks` (Almacenamiento de Vectores)
 
 **Propósito**: Almacenamiento de embeddings y chunks
 
 **Estructura** (pgvector):
 - `id` (UUID, PRIMARY KEY): ID único del chunk
-- `embedding` (vector(1536)): Embedding vectorial (1536 dimensiones)
+- `embedding` (vector(384)): Embedding vectorial (384 dimensiones)
+- `content` (TEXT): Contenido del chunk
 - `metadata` (JSONB): Metadatos del chunk
+
+**Función RPC de búsqueda**: `match_documents_384`
+- Recibe: `query_embedding` (vector de 384 dimensiones) y `match_count`
+- Retorna: Los chunks más similares usando distancia coseno
+- Filtros opcionales: `category_filter` para filtrar por categoría
 
 **Metadatos guardados**:
 ```json
@@ -481,6 +480,8 @@ if check_chunk_exists(chunk_id, collection_name):
 
 **Relaciones**:
 - `metadata->>'doc_id'` → `documents.doc_id` (relación lógica)
+
+**Nota**: El sistema usa la función RPC `match_documents_384` para búsqueda semántica en lugar de índices de LlamaIndex. Esta función está optimizada para embeddings de 384 dimensiones.
 
 ### 6.3. Tabla `profiles` (Usuarios)
 
@@ -508,8 +509,9 @@ if check_chunk_exists(chunk_id, collection_name):
 ```
 documents (doc_id, filename, file_path, title, total_chunks, ...)
     ↓
-vecs.knowledge (id, embedding, metadata)
+book_chunks (id, embedding[384], content, metadata)
     └─ metadata->>'doc_id' referencia documents.doc_id
+    └─ Búsqueda mediante match_documents_384 RPC
 
 profiles (id, tokens_restantes, email, ...)
     ↓
@@ -730,8 +732,7 @@ pip install -r requirements.txt
 - `supabase`: Cliente de Supabase
 - `litellm`: Abstracción para modelos de IA
 - `llama-index`: Framework RAG
-- `llama-index-vector-stores-supabase`: Integración con Supabase
-- `llama-index-embeddings-openai`: Embeddings de OpenAI
+- `sentence-transformers`: Embeddings locales (all-MiniLM-L6-v2)
 - `python-dotenv`: Variables de entorno
 - `pypdf`: Lectura de PDFs
 - `python-docx`: Lectura de documentos Word
@@ -749,6 +750,7 @@ pip install -r requirements.txt
 **Scripts SQL** (si necesitas crearlos manualmente):
 - Ver `create_profiles_table.sql`
 - Ver `create_conversations_table.sql`
+- Ver `create_match_documents_384_function.sql` (función RPC para búsqueda)
 
 ### 9.4. Preparar Archivos
 
@@ -865,9 +867,10 @@ python verificar_limites_openai.py
 **Definición**: Representación vectorial de un texto que captura su significado semántico.
 
 **Características**:
-- Es un vector de números (ej: 1536 dimensiones)
+- Es un vector de números (ej: 384 dimensiones con all-MiniLM-L6-v2)
 - Textos similares tienen embeddings similares
 - Se usa para búsqueda semántica
+- En este sistema: Generado localmente con SentenceTransformer
 
 **Ejemplo**:
 - "gato" y "felino" tienen embeddings similares
@@ -883,6 +886,9 @@ python verificar_limites_openai.py
 - Optimizado para búsqueda semántica
 
 **En este proyecto**: Supabase con pgvector (PostgreSQL)
+- Tabla: `book_chunks`
+- Función de búsqueda: `match_documents_384`
+- Dimensiones: 384 (all-MiniLM-L6-v2)
 
 ### doc_id
 
@@ -902,40 +908,21 @@ python verificar_limites_openai.py
 - Único: chunks diferentes tienen hashes diferentes
 - Usado para evitar duplicar chunks
 
-### RPM (Requests Per Minute)
+### match_documents_384
 
-**Definición**: Número de requests (peticiones) que se pueden hacer por minuto a la API de OpenAI.
+**Definición**: Función RPC en Supabase que realiza búsqueda semántica usando embeddings de 384 dimensiones.
 
-**En Tier 3**: 5,000 RPM
+**Parámetros**:
+- `query_embedding`: Vector de 384 dimensiones de la consulta
+- `match_count`: Número de chunks a retornar (por defecto: 5)
+- `category_filter` (opcional): Filtrar por categoría
 
-**Objetivo del sistema**: 3,500 RPM (70% de 5,000)
-
-### TPM (Tokens Per Minute)
-
-**Definición**: Número de tokens que se pueden procesar por minuto en la API de OpenAI.
-
-**En Tier 3**: 5,000,000 TPM
-
-**Objetivo del sistema**: 3,500,000 TPM (70% de 5,000,000)
-
-### TPD (Tokens Per Day)
-
-**Definición**: Número de tokens que se pueden procesar por día en la API de OpenAI.
-
-**En Tier 3**: 100,000,000 TPD
-
-### Tier 3
-
-**Definición**: Nivel de acceso a la API de OpenAI con límites elevados.
-
-**Límites**:
-- 5,000 RPM
-- 5,000,000 TPM
-- 100,000,000 TPD
+**Retorna**: Lista de chunks ordenados por similitud (distancia coseno)
 
 **Ventajas**:
-- Permite procesar grandes volúmenes de datos
-- Ideal para ingesta masiva de documentos
+- Optimizado para embeddings de 384 dimensiones
+- Búsqueda eficiente usando pgvector
+- Soporte para filtros por categoría
 
 ---
 
@@ -1049,12 +1036,13 @@ python verificar_limites_openai.py
 Este sistema RAG de ingesta de libros es una solución completa y robusta para indexar y consultar grandes colecciones de documentos. Incluye:
 
 - ✅ **Ingesta masiva y paralela**
-- ✅ **Control de límites de API**
+- ✅ **Embeddings locales sin costo** (SentenceTransformer)
 - ✅ **Sistema anti-duplicados robusto**
 - ✅ **Monitor en tiempo real**
 - ✅ **Reporte detallado**
 - ✅ **API REST para consultas**
 - ✅ **Soporte para múltiples modelos de IA**
+- ✅ **Búsqueda semántica optimizada** (match_documents_384)
 
 **Próximos pasos**:
 1. Implementar filtros de búsqueda avanzados
@@ -1076,11 +1064,20 @@ Para preguntas o problemas, consulta la documentación técnica en los archivos 
 
 ---
 
-## 15. Cambios recientes (2025-11-16)
+## 15. Cambios recientes
+
+### 2025-11-19: Migración a Embeddings Locales
+
+- **Migración completa a SentenceTransformer**: El sistema ahora usa `all-MiniLM-L6-v2` (384 dimensiones) en lugar de OpenAI embeddings
+- **Sin costo por embeddings**: El procesamiento es completamente local, sin límites de API
+- **Función RPC optimizada**: Uso de `match_documents_384` para búsqueda semántica en Supabase
+- **Tabla actualizada**: Los embeddings se almacenan en `book_chunks` con 384 dimensiones
+
+### 2025-11-16: Mejoras de Rendimiento
 
 - Escalado de Supabase al plan XL (4 cores, 16 GB RAM) para mayor concurrencia.
 - Instalación de `tenacity` en `venv_ingesta` para reintentos automáticos.
-- Reemplazo completo de `ingest_masiva_local.py` por versión “anti-fracaso”:
+- Reemplazo completo de `ingest_masiva_local.py` por versión "anti-fracaso":
   - Reintentos robustos con `RemoteProtocolError`, `ConnectError`, `httpx.ReadError` y `httpcore.ReadError`.
   - `upsert(..., on_conflict="doc_id")` en tabla `documents` para evitar `23505 duplicate key`.
   - Limpieza de texto eliminando `\u0000` para evitar error `22P05` en Postgres.
@@ -1090,4 +1087,4 @@ Para preguntas o problemas, consulta la documentación técnica en los archivos 
 
 ---
 
-**Última actualización**: 2025-11-16
+**Última actualización**: 2025-11-19
