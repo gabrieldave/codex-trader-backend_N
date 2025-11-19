@@ -17,3 +17,4 @@ DROP FUNCTION IF EXISTS match_documents_hybrid(
 -- ✅ LISTO - La función híbrida ha sido eliminada
 -- ============================================================================
 
+
