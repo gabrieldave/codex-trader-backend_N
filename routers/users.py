@@ -823,8 +823,13 @@ async def notify_user_registration(
             # Obtener nombre del usuario desde el email (parte antes del @)
             user_name = user_email.split('@')[0] if '@' in user_email else 'usuario'
             
-            # Obtener contraseña si está disponible en input_data
-            user_password = input_data.password if input_data and input_data.password else None
+            # Obtener contraseña si está disponible en input_data (usar getattr para evitar errores si no existe)
+            user_password = None
+            if input_data:
+                try:
+                    user_password = getattr(input_data, 'password', None)
+                except (AttributeError, TypeError):
+                    user_password = None
             
             # Construir sección de credenciales si hay contraseña
             credentials_section = ""
