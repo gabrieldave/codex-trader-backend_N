@@ -323,7 +323,7 @@ Si tienes menos de 5 párrafos, estás violando el modo Estudio Profundo.
         Yields:
             str: Chunks de texto de la respuesta
         """
-        chat_model = self._get_chat_model()
+        chat_model = self.get_chat_model()
         is_deep_mode = response_mode and (
             response_mode.lower() == 'deep' or 
             response_mode.lower() == 'estudio profundo' or
