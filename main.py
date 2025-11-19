@@ -20,7 +20,7 @@ lib_dir = os.path.join(current_dir, "lib")
 if os.path.exists(lib_dir) and lib_dir not in sys.path:
     sys.path.insert(0, lib_dir)
 
-from fastapi import FastAPI, Depends, HTTPException, Header, Query, Request
+from fastapi import FastAPI, Depends, HTTPException, Header, Query, Request, BackgroundTasks
 from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -3009,7 +3009,7 @@ async def create_checkout_session(
 # RUTA: POST /billing/stripe-webhook
 # IMPORTANTE: Este endpoint NO requiere autenticación normal, Stripe lo firma con webhook_secret
 @app.post("/billing/stripe-webhook")
-async def stripe_webhook(request: Request):
+async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
     logger.info("🔔 Webhook endpoint llamado")
     try:
         payload = await request.body()
@@ -3033,18 +3033,20 @@ async def stripe_webhook(request: Request):
         
         logger.info(f"✅ Webhook recibido y verificado: {event['type']}")
         
-        # Procesa eventos
+        # IMPORTANTE: Procesar eventos en background para responder rápidamente a Stripe
+        # Stripe requiere respuesta en menos de 10 segundos, así que procesamos en background
         if event["type"] == "checkout.session.completed":
             session = event["data"]["object"]
-            logger.info(f"🛒 Procesando checkout.session.completed para sesión: {session.get('id')}")
-            # Llamar a la función que procesa el checkout y actualiza tokens
-            await handle_checkout_session_completed(session)
+            logger.info(f"🛒 Procesando checkout.session.completed para sesión: {session.get('id')} (en background)")
+            # Procesar en background sin bloquear la respuesta
+            background_tasks.add_task(handle_checkout_session_completed, session)
         elif event["type"] == "invoice.paid":
             invoice = event["data"]["object"]
-            logger.info(f"💰 Procesando invoice.paid para invoice: {invoice.get('id')}")
-            # Llamar a la función que procesa la renovación mensual
-            await handle_invoice_paid(invoice)
-            
+            logger.info(f"💰 Procesando invoice.paid para invoice: {invoice.get('id')} (en background)")
+            # Procesar en background sin bloquear la respuesta
+            background_tasks.add_task(handle_invoice_paid, invoice)
+        
+        # Responder inmediatamente a Stripe (no esperar el procesamiento)
         return {"status": "success"}
         
     except Exception as e:
@@ -5475,8 +5477,10 @@ async def process_referral(
                 detail="El código de referido no puede estar vacío"
             )
         
-        # Verificar que el usuario no tenga ya un referido asignado
-        profile_response = supabase_client.table("profiles").select("referred_by_user_id").eq("id", user_id).execute()
+        # OPTIMIZACIÓN: Obtener toda la información necesaria en una sola consulta
+        profile_response = supabase_client.table("profiles").select(
+            "referred_by_user_id, referral_code, tokens_restantes"
+        ).eq("id", user_id).execute()
         
         if not profile_response.data:
             raise HTTPException(
@@ -5484,7 +5488,8 @@ async def process_referral(
                 detail="Perfil de usuario no encontrado"
             )
         
-        existing_referrer = profile_response.data[0].get("referred_by_user_id")
+        profile = profile_response.data[0]
+        existing_referrer = profile.get("referred_by_user_id")
         if existing_referrer:
             raise HTTPException(
                 status_code=400,
@@ -5492,8 +5497,8 @@ async def process_referral(
             )
         
         # Verificar que el usuario no se esté refiriendo a sí mismo
-        user_profile = supabase_client.table("profiles").select("referral_code").eq("id", user_id).execute()
-        if user_profile.data and user_profile.data[0].get("referral_code") == referral_code:
+        user_referral_code = profile.get("referral_code")
+        if user_referral_code == referral_code:
             raise HTTPException(
                 status_code=400,
                 detail="No puedes usar tu propio código de referido"
@@ -5510,21 +5515,24 @@ async def process_referral(
         
         referrer_id = referrer_response.data[0]["id"]
         
-        # Actualizar el perfil del usuario con referred_by_user_id
+        # OPTIMIZACIÓN: Calcular tokens directamente sin consulta adicional
+        welcome_bonus = 5000
+        current_tokens = profile.get("tokens_restantes", 0) or 0
+        new_tokens = current_tokens + welcome_bonus
+        
+        # Actualizar perfil y tokens en una sola operación
         update_response = supabase_client.table("profiles").update({
-            "referred_by_user_id": referrer_id
+            "referred_by_user_id": referrer_id,
+            "tokens_restantes": new_tokens
         }).eq("id", user_id).execute()
         
         if update_response.data:
-            # Aplicar bono de bienvenida de 5,000 tokens al usuario referido
-            welcome_bonus = 5000
-            add_tokens_to_user(user_id, welcome_bonus, "Bono de bienvenida por referido")
-            
             # IMPORTANTE: Enviar email de notificación al admin sobre nuevo registro
             # Esto se hace en segundo plano y no bloquea la respuesta
             try:
                 from lib.email import send_admin_email
                 from datetime import datetime
+                import threading
                 
                 # Obtener información del usuario y referrer para el email
                 user_email = user.email
@@ -5546,8 +5554,6 @@ async def process_referral(
                 """
                 
                 # Enviar email en segundo plano (no bloquea)
-                # Usar threading para ejecutar en background
-                import threading
                 def send_email_background():
                     try:
                         send_admin_email("Nuevo registro en Codex Trader", html_content)
@@ -5560,6 +5566,7 @@ async def process_referral(
                 # No es crítico si falla el email
                 print(f"WARNING: No se pudo enviar email de notificación de registro: {email_error}")
             
+            # Retornar respuesta inmediatamente sin esperar emails
             return {
                 "success": True,
                 "message": f"Referido procesado correctamente. Fuiste referido por {referrer_response.data[0].get('email', 'usuario')}. ¡Recibiste {welcome_bonus:,} tokens de bienvenida!",
