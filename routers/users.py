@@ -1119,9 +1119,10 @@ async def process_referral(
         profile = profile_response.data[0]
         existing_referrer = profile.get("referred_by_user_id")
         if existing_referrer:
+            # Usuario ya tiene un referido asignado (ya usó un código antes)
             raise HTTPException(
                 status_code=400,
-                detail="Este usuario ya tiene un referido asignado"
+                detail="Este usuario ya tiene un código de referido asignado. Solo puedes usar un código de referido al registrarte."
             )
         
         # Verificar que el usuario no se esté refiriendo a sí mismo
