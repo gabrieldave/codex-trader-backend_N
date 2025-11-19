@@ -141,7 +141,7 @@ class RAGService:
         """
         doc_ids = set()
         for row in chunks:
-            # La función híbrida retorna doc_id directamente, pero también puede estar en metadata
+            # La función retorna doc_id directamente, pero también puede estar en metadata
             doc_id = row.get("doc_id")
             if not doc_id:
                 # Fallback: buscar en metadata si no está en el nivel superior
