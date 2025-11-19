@@ -81,7 +81,14 @@ async def create_checkout_session(
         if not is_valid_plan_code or not is_valid_plan_code(plan_code):
             raise HTTPException(
                 status_code=400,
-                detail=f"Código de plan inválido: {plan_code}. Debe ser uno de: explorer, trader, pro, institucional"
+                detail=f"Código de plan inválido: {plan_code}. Debe ser uno de: gratis, explorer, trader, pro, institucional"
+            )
+        
+        # Si es el plan gratis, no crear checkout de Stripe
+        if plan_code == "gratis":
+            raise HTTPException(
+                status_code=400,
+                detail="El plan gratis no requiere checkout. Regístrate para obtener 20,000 tokens gratis."
             )
         
         # Obtener el Price ID de Stripe para el plan

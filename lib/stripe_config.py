@@ -144,5 +144,7 @@ def is_valid_plan_code(plan_code: str) -> bool:
     Returns:
         True si el código es válido, False en caso contrario
     """
-    return plan_code.lower() in STRIPE_PRICE_IDS.keys()
+    valid_codes = set(STRIPE_PRICE_IDS.keys())
+    valid_codes.add("gratis")  # El plan gratis no requiere Stripe
+    return plan_code.lower() in valid_codes
 

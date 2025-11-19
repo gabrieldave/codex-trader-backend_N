@@ -68,9 +68,9 @@ INITIAL_TOKENS = 15000
 # Estos valores se usan para calcular el costo estimado de cada llamada
 # Actualiza estos valores si cambian los precios de los proveedores
 
-# DeepSeek
-DEEPSEEK_INPUT_COST_PER_MILLION = 0.20   # USD por millón de tokens de entrada
-DEEPSEEK_OUTPUT_COST_PER_MILLION = 0.80  # USD por millón de tokens de salida
+# DeepSeek Chat (precios reales actualizados)
+DEEPSEEK_INPUT_COST_PER_MILLION = 0.14   # USD por millón de tokens de entrada
+DEEPSEEK_OUTPUT_COST_PER_MILLION = 0.28  # USD por millón de tokens de salida
 
 # OpenAI
 OPENAI_GPT35_TURBO_INPUT_COST_PER_MILLION = 0.50   # USD por millón de tokens de entrada
@@ -89,6 +89,10 @@ ANTHROPIC_CLAUDE_OPUS_OUTPUT_COST_PER_MILLION = 75.00  # USD por millón de toke
 # Google (Gemini)
 GOOGLE_GEMINI_PRO_INPUT_COST_PER_MILLION = 0.50   # USD por millón de tokens de entrada
 GOOGLE_GEMINI_PRO_OUTPUT_COST_PER_MILLION = 1.50 # USD por millón de tokens de salida
+
+# Google Gemini Flash (precios reales actualizados)
+GOOGLE_GEMINI_FLASH_INPUT_COST_PER_MILLION = 0.075   # USD por millón de tokens de entrada
+GOOGLE_GEMINI_FLASH_OUTPUT_COST_PER_MILLION = 0.30   # USD por millón de tokens de salida
 
 # Cohere
 COHERE_COMMAND_INPUT_COST_PER_MILLION = 1.00   # USD por millón de tokens de entrada
@@ -131,7 +135,11 @@ def get_model_costs(provider: str, model: str) -> tuple[float, float]:
     
     # Google (Gemini)
     elif provider_lower == "google" or "gemini" in model_lower:
-        return (GOOGLE_GEMINI_PRO_INPUT_COST_PER_MILLION, GOOGLE_GEMINI_PRO_OUTPUT_COST_PER_MILLION)
+        # Detectar si es Gemini Flash (más barato)
+        if "flash" in model_lower:
+            return (GOOGLE_GEMINI_FLASH_INPUT_COST_PER_MILLION, GOOGLE_GEMINI_FLASH_OUTPUT_COST_PER_MILLION)
+        else:
+            return (GOOGLE_GEMINI_PRO_INPUT_COST_PER_MILLION, GOOGLE_GEMINI_PRO_OUTPUT_COST_PER_MILLION)
     
     # Cohere
     elif provider_lower == "cohere" or "cohere" in model_lower:

@@ -192,15 +192,22 @@ async def get_admin_user(authorization: Optional[str] = Header(None)):
 
 
 @admin_router.get("/metrics")
-async def get_system_metrics(admin_user = Depends(get_admin_user)):
+async def get_system_metrics(admin_user = Depends(get_admin_user), period: Optional[str] = None):
     """
-    Obtiene métricas de uso total del sistema.
+    Obtiene métricas de uso total del sistema con opción de filtrar por período.
+    
+    Parámetros:
+    - period: Opcional. Filtro de período ('day', 'week', 'month', 'all'). Por defecto 'all'.
     
     Retorna:
     - Total de eventos de Estudio Profundo (deep)
     - Total de eventos de Consulta Rápida (fast)
     - Total de tokens gastados
     - Total de costos estimados
+    - Costos por modelo (DeepSeek, Gemini Flash, etc.)
+    - Ingresos desde Stripe
+    - Ganancias (ingresos - costos)
+    - Métricas por período
     """
     if not supabase_admin_client:
         raise HTTPException(
@@ -209,25 +216,29 @@ async def get_system_metrics(admin_user = Depends(get_admin_user)):
         )
     
     try:
-        # Obtener todos los eventos de uso de modelos
-        usage_response = supabase_admin_client.table("model_usage_events").select("*").execute()
+        from datetime import datetime, timedelta
         
-        if not usage_response.data:
-            return {
-                "total_deep_events": 0,
-                "total_fast_events": 0,
-                "total_tokens": 0,
-                "total_tokens_input": 0,
-                "total_tokens_output": 0,
-                "total_cost_usd": 0.0,
-                "total_events": 0
-            }
+        # Calcular fechas según el período
+        now = datetime.utcnow()
+        date_from = None
         
-        events = usage_response.data
+        if period == "day":
+            date_from = now - timedelta(days=1)
+        elif period == "week":
+            date_from = now - timedelta(weeks=1)
+        elif period == "month":
+            date_from = now - timedelta(days=30)
+        # Si period es None o "all", no filtrar por fecha
         
-        # Clasificar eventos como "deep" o "fast" basándose en tokens totales
-        # Estudio Profundo generalmente usa más tokens (>3000 tokens totales)
-        # Consulta Rápida usa menos tokens (<=3000 tokens totales)
+        # Obtener eventos de uso de modelos
+        if date_from:
+            usage_response = supabase_admin_client.table("model_usage_events").select("*").gte("created_at", date_from.isoformat()).execute()
+        else:
+            usage_response = supabase_admin_client.table("model_usage_events").select("*").execute()
+        
+        events = usage_response.data if usage_response.data else []
+        
+        # Clasificar eventos y calcular costos por modelo
         deep_events = []
         fast_events = []
         total_tokens = 0
@@ -235,22 +246,73 @@ async def get_system_metrics(admin_user = Depends(get_admin_user)):
         total_tokens_output = 0
         total_cost = 0.0
         
+        # Costos por modelo
+        costs_by_model: dict[str, dict[str, float]] = {}
+        costs_by_provider: dict[str, dict[str, float]] = {}
+        
         for event in events:
             tokens_input = event.get("tokens_input", 0) or 0
             tokens_output = event.get("tokens_output", 0) or 0
             tokens_total = tokens_input + tokens_output
             cost = float(event.get("cost_estimated_usd", 0) or 0)
+            model = event.get("model", "unknown")
+            provider = event.get("provider", "unknown")
             
             total_tokens += tokens_total
             total_tokens_input += tokens_input
             total_tokens_output += tokens_output
             total_cost += cost
             
+            # Agrupar costos por modelo
+            if model not in costs_by_model:
+                costs_by_model[model] = {
+                    "cost": 0.0,
+                    "tokens_input": 0,
+                    "tokens_output": 0,
+                    "events": 0
+                }
+            costs_by_model[model]["cost"] += cost
+            costs_by_model[model]["tokens_input"] += tokens_input
+            costs_by_model[model]["tokens_output"] += tokens_output
+            costs_by_model[model]["events"] += 1
+            
+            # Agrupar costos por proveedor
+            if provider not in costs_by_provider:
+                costs_by_provider[provider] = {
+                    "cost": 0.0,
+                    "tokens_input": 0,
+                    "tokens_output": 0,
+                    "events": 0
+                }
+            costs_by_provider[provider]["cost"] += cost
+            costs_by_provider[provider]["tokens_input"] += tokens_input
+            costs_by_provider[provider]["tokens_output"] += tokens_output
+            costs_by_provider[provider]["events"] += 1
+            
             # Clasificar: si usa más de 3000 tokens, es probablemente "deep"
             if tokens_total > 3000:
                 deep_events.append(event)
             else:
                 fast_events.append(event)
+        
+        # Obtener ingresos desde stripe_payments
+        total_revenue = 0.0
+        try:
+            if date_from:
+                payments_response = supabase_admin_client.table("stripe_payments").select("amount_usd").gte("payment_date", date_from.isoformat()).execute()
+            else:
+                payments_response = supabase_admin_client.table("stripe_payments").select("amount_usd").execute()
+            
+            if payments_response.data:
+                for payment in payments_response.data:
+                    amount = float(payment.get("amount_usd", 0) or 0)
+                    total_revenue += amount
+        except Exception as e:
+            logger.warning(f"⚠️ Error al obtener ingresos: {e}")
+            total_revenue = 0.0
+        
+        # Calcular ganancias
+        profit = total_revenue - total_cost
         
         # Obtener total de usuarios únicos
         try:
@@ -260,6 +322,35 @@ async def get_system_metrics(admin_user = Depends(get_admin_user)):
             logger.warning(f"⚠️ Error al obtener total de usuarios: {e}")
             total_users = 0
         
+        # Preparar respuesta con costos por modelo
+        costs_by_model_list = [
+            {
+                "model": model,
+                "cost_usd": round(costs["cost"], 6),
+                "tokens_input": costs["tokens_input"],
+                "tokens_output": costs["tokens_output"],
+                "total_tokens": costs["tokens_input"] + costs["tokens_output"],
+                "events": costs["events"]
+            }
+            for model, costs in costs_by_model.items()
+        ]
+        # Ordenar por costo descendente
+        costs_by_model_list.sort(key=lambda x: x["cost_usd"], reverse=True)
+        
+        costs_by_provider_list = [
+            {
+                "provider": provider,
+                "cost_usd": round(costs["cost"], 6),
+                "tokens_input": costs["tokens_input"],
+                "tokens_output": costs["tokens_output"],
+                "total_tokens": costs["tokens_input"] + costs["tokens_output"],
+                "events": costs["events"]
+            }
+            for provider, costs in costs_by_provider.items()
+        ]
+        # Ordenar por costo descendente
+        costs_by_provider_list.sort(key=lambda x: x["cost_usd"], reverse=True)
+        
         return {
             "total_deep_events": len(deep_events),
             "total_fast_events": len(fast_events),
@@ -267,10 +358,17 @@ async def get_system_metrics(admin_user = Depends(get_admin_user)):
             "total_tokens_input": total_tokens_input,
             "total_tokens_output": total_tokens_output,
             "total_cost_usd": round(total_cost, 6),
+            "total_revenue_usd": round(total_revenue, 2),
+            "total_profit_usd": round(profit, 2),
+            "profit_margin_percent": round((profit / total_revenue * 100) if total_revenue > 0 else 0, 2),
             "total_events": len(events),
             "deep_events_percentage": round((len(deep_events) / len(events) * 100) if events else 0, 2),
             "fast_events_percentage": round((len(fast_events) / len(events) * 100) if events else 0, 2),
-            "total_users": total_users
+            "total_users": total_users,
+            "costs_by_model": costs_by_model_list,
+            "costs_by_provider": costs_by_provider_list,
+            "period": period or "all",
+            "date_from": date_from.isoformat() if date_from else None
         }
         
     except Exception as e:
