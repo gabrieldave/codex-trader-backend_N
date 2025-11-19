@@ -4,7 +4,8 @@
 -- Copia y pega todo este contenido en el SQL Editor de Supabase
 -- ============================================================================
 
--- Crear función híbrida optimizada (prioriza búsqueda semántica)
+-- Crear función híbrida ULTRA optimizada (versión simplificada)
+-- Esta versión prioriza velocidad sobre complejidad
 CREATE OR REPLACE FUNCTION match_documents_hybrid(
     query_text text,
     query_embedding vector(384),
@@ -21,19 +22,11 @@ RETURNS TABLE (
     category text,
     similarity float
 )
-LANGUAGE plpgsql
+LANGUAGE sql
+STABLE
 AS $$
-DECLARE
-    semantic_limit int;
-    full_text_limit int;
-BEGIN
-    -- Limitar resultados para mejorar rendimiento
-    semantic_limit := match_count * 2; -- Búsqueda semántica (principal)
-    full_text_limit := match_count; -- Búsqueda de texto (complementaria, más pequeña)
-    
-    RETURN QUERY
+    -- Versión simplificada: solo búsqueda semántica con boost de texto completo si existe
     WITH semantic AS (
-        -- Búsqueda semántica (principal, más rápida con índices)
         SELECT 
             bc.id,
             bc.doc_id,
@@ -46,91 +39,43 @@ BEGIN
         WHERE 
             (category_filter IS NULL OR d.category = category_filter)
         ORDER BY bc.embedding <=> query_embedding
-        LIMIT semantic_limit
-    ),
-    full_text AS (
-        -- Búsqueda de texto completo (complementaria, limitada)
-        SELECT 
-            bc.id,
-            bc.doc_id,
-            bc.content,
-            bc.metadata,
-            d.category,
-            ts_rank_cd(to_tsvector('spanish', bc.content), websearch_to_tsquery('spanish', query_text)) as rank
-        FROM book_chunks bc
-        JOIN documents d ON bc.doc_id = d.doc_id
-        WHERE 
-            to_tsvector('spanish', bc.content) @@ websearch_to_tsquery('spanish', query_text)
-            AND (category_filter IS NULL OR d.category = category_filter)
-        ORDER BY rank DESC
-        LIMIT full_text_limit
-    ),
-    combined AS (
-        -- Combinar resultados: priorizar semántica, agregar texto completo si no está duplicado
-        SELECT 
-            s.id,
-            s.doc_id,
-            s.content,
-            s.metadata,
-            s.category,
-            -- Score: semántica (principal) + texto completo (boost si existe)
-            (s.similarity * semantic_weight + COALESCE(ft.rank, 0) * full_text_weight) as combined_score
-        FROM semantic s
-        LEFT JOIN full_text ft ON s.id = ft.id
-        
-        UNION ALL
-        
-        -- Agregar resultados de texto completo que no están en semántica
-        SELECT 
-            ft.id,
-            ft.doc_id,
-            ft.content,
-            ft.metadata,
-            ft.category,
-            (COALESCE(ft.rank, 0) * full_text_weight) as combined_score
-        FROM full_text ft
-        WHERE NOT EXISTS (SELECT 1 FROM semantic s WHERE s.id = ft.id)
-    ),
-    ranked AS (
-        SELECT DISTINCT ON (id)
-            id,
-            doc_id,
-            content,
-            metadata,
-            category,
-            combined_score
-        FROM combined
-        ORDER BY id, combined_score DESC
+        LIMIT LEAST(match_count * 2, 20) -- Máximo 20 resultados para evitar timeout
     )
     SELECT 
-        id,
-        doc_id,
-        content,
-        metadata,
-        category,
-        combined_score as similarity
-    FROM ranked
-    ORDER BY combined_score DESC
+        s.id,
+        s.doc_id,
+        s.content,
+        s.metadata,
+        s.category,
+        -- Score: principalmente semántica, con pequeño boost si contiene el texto
+        (s.similarity * semantic_weight + 
+         CASE 
+             WHEN to_tsvector('spanish', s.content) @@ websearch_to_tsquery('spanish', query_text) 
+             THEN 0.1 * full_text_weight 
+             ELSE 0 
+         END) as similarity
+    FROM semantic s
+    ORDER BY similarity DESC
     LIMIT match_count;
-END;
 $$;
 
 -- ============================================================================
--- CREAR ÍNDICES PARA MEJORAR RENDIMIENTO (EJECUTAR DESPUÉS DE LA FUNCIÓN)
+-- CREAR ÍNDICES PARA MEJORAR RENDIMIENTO
+-- ⚠️ EJECUTAR ESTOS ÍNDICES POR SEPARADO (pueden tardar varios minutos)
 -- ============================================================================
 
--- Índice para búsqueda semántica (vector)
-CREATE INDEX IF NOT EXISTS idx_book_chunks_embedding ON book_chunks 
-    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+-- PASO 1: Índice para búsqueda semántica (vector) - EJECUTAR PRIMERO
+-- CREATE INDEX IF NOT EXISTS idx_book_chunks_embedding ON book_chunks 
+--     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
--- Índice para búsqueda de texto completo
-CREATE INDEX IF NOT EXISTS idx_book_chunks_content_fts ON book_chunks 
-    USING gin(to_tsvector('spanish', content));
+-- PASO 2: Índice para mejorar JOINs - EJECUTAR SEGUNDO
+-- CREATE INDEX IF NOT EXISTS idx_book_chunks_doc_id ON book_chunks (doc_id);
+-- CREATE INDEX IF NOT EXISTS idx_documents_doc_id ON documents (doc_id);
+-- CREATE INDEX IF NOT EXISTS idx_documents_category ON documents (category);
 
--- Índice para mejorar JOINs con documents
-CREATE INDEX IF NOT EXISTS idx_book_chunks_doc_id ON book_chunks (doc_id);
-CREATE INDEX IF NOT EXISTS idx_documents_doc_id ON documents (doc_id);
-CREATE INDEX IF NOT EXISTS idx_documents_category ON documents (category);
+-- PASO 3: Índice para búsqueda de texto completo - EJECUTAR ÚLTIMO (más lento)
+-- CREATE INDEX IF NOT EXISTS idx_book_chunks_content_fts ON book_chunks 
+--     USING gin(to_tsvector('spanish', content));
 
 -- ============================================================================
 -- ✅ LISTO - La función y los índices están creados
