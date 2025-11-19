@@ -264,6 +264,8 @@ async def handle_checkout_session_completed(session: dict):
         metadata = session.get("metadata", {})
         user_id = metadata.get("user_id")
         plan_code = metadata.get("plan_code")
+        # IMPORTANTE: Obtener email desde metadata primero (más confiable)
+        user_email_from_metadata = metadata.get("user_email")
         
         if not user_id:
             print(f"⚠️ checkout.session.completed sin user_id en metadata: {session.get('id')}")
@@ -431,7 +433,13 @@ async def handle_checkout_session_completed(session: dict):
                         if payment_response.data:
                             print(f"✅ Pago inicial registrado: ${amount_usd:.2f} USD para usuario {user_id} (plan: {plan_code})")
                     except Exception as insert_error:
-                        print(f"⚠️ Pago ya registrado o error al insertar: {insert_error}")
+                        error_msg = str(insert_error)
+                        # Si la tabla no existe, solo loguear warning (no crítico)
+                        if "PGRST205" in error_msg or "table" in error_msg.lower() and "not found" in error_msg.lower():
+                            logger.warning(f"⚠️ Tabla stripe_payments no existe. Ejecuta create_stripe_payments_table.sql para crearla.")
+                            print(f"⚠️ Tabla stripe_payments no existe. Ejecuta create_stripe_payments_table.sql para crearla.")
+                        else:
+                            print(f"⚠️ Pago ya registrado o error al insertar: {insert_error}")
             except Exception as payment_error:
                 print(f"⚠️ Error al registrar pago inicial (no crítico): {payment_error}")
             
@@ -440,9 +448,26 @@ async def handle_checkout_session_completed(session: dict):
                 from lib.email import send_admin_email
                 import threading
                 
-                # Obtener información del usuario y plan
-                user_info_response = supabase_client.table("profiles").select("email").eq("id", user_id).execute()
-                user_email = user_info_response.data[0].get("email") if user_info_response.data else "N/A"
+                # IMPORTANTE: Obtener email del usuario - usar metadata primero, luego BD como fallback
+                user_email = user_email_from_metadata
+                if not user_email or user_email == "N/A":
+                    try:
+                        user_info_response = supabase_client.table("profiles").select("email").eq("id", user_id).execute()
+                        if user_info_response.data:
+                            user_email = user_info_response.data[0].get("email")
+                        else:
+                            user_email = "N/A"
+                            logger.warning(f"⚠️ No se encontró email para usuario {user_id} en BD ni en metadata")
+                    except Exception as e:
+                        logger.error(f"❌ Error al obtener email del usuario desde BD: {e}")
+                        user_email = user_email_from_metadata or "N/A"
+                
+                # Validar que tenemos un email válido
+                if not user_email or user_email == "N/A" or "@" not in user_email:
+                    logger.error(f"❌ Email inválido para usuario {user_id}: {user_email}")
+                    print(f"❌ No se puede enviar email: email inválido ({user_email})")
+                    # Continuar sin enviar email al usuario, pero sí al admin
+                    user_email = None
                 
                 plan_name = plan_code
                 plan_price = None
@@ -527,8 +552,14 @@ async def handle_checkout_session_completed(session: dict):
                         print(f"⚠️ Error al enviar email al admin por checkout completado: {e}")
                 
                 # IMPORTANTE: También enviar email al usuario confirmando su compra
+                # SOLO si tenemos un email válido
                 def send_user_checkout_email():
                     try:
+                        # Validar que tenemos email válido antes de enviar
+                        if not user_email or user_email == "N/A" or "@" not in user_email:
+                            logger.warning(f"⚠️ No se enviará email al usuario: email inválido ({user_email})")
+                            return
+                        
                         from lib.email import send_email
                         
                         # Obtener información del plan
@@ -626,8 +657,12 @@ async def handle_checkout_session_completed(session: dict):
                 admin_thread = threading.Thread(target=send_admin_checkout_email, daemon=True)
                 admin_thread.start()
                 
-                user_thread = threading.Thread(target=send_user_checkout_email, daemon=True)
-                user_thread.start()
+                # Solo enviar email al usuario si tenemos un email válido
+                if user_email and user_email != "N/A" and "@" in user_email:
+                    user_thread = threading.Thread(target=send_user_checkout_email, daemon=True)
+                    user_thread.start()
+                else:
+                    logger.warning(f"⚠️ No se enviará email de confirmación al usuario {user_id}: email inválido")
             except Exception as email_error:
                 print(f"⚠️ Error al preparar emails por checkout completado: {email_error}")
                 logger.error(f"❌ Error al preparar emails por checkout completado: {email_error}")
@@ -661,8 +696,33 @@ async def handle_invoice_paid(invoice: dict):
         profile_response = supabase_client.table("profiles").select("id, email, current_plan").eq("stripe_customer_id", customer_id).execute()
         
         if not profile_response.data:
+            # IMPORTANTE: Si no se encuentra por customer_id, puede ser que checkout.session.completed aún no se haya procesado
+            # Intentar buscar por subscription metadata o esperar a que checkout.session.completed se procese
+            logger.warning(f"⚠️ No se encontró usuario con stripe_customer_id: {customer_id}")
             print(f"⚠️ No se encontró usuario con stripe_customer_id: {customer_id}")
-            return
+            print(f"   Esto puede pasar si invoice.paid llega antes que checkout.session.completed")
+            print(f"   El webhook checkout.session.completed debería asignar el stripe_customer_id primero")
+            # No retornar inmediatamente, intentar obtener desde subscription metadata si está disponible
+            if subscription_id:
+                try:
+                    subscription = stripe.Subscription.retrieve(subscription_id)
+                    # Si la subscription tiene metadata con user_id, usarlo
+                    if subscription.metadata and subscription.metadata.get("user_id"):
+                        user_id_from_sub = subscription.metadata.get("user_id")
+                        profile_response = supabase_client.table("profiles").select("id, email, current_plan").eq("id", user_id_from_sub).execute()
+                        if profile_response.data:
+                            logger.info(f"✅ Usuario encontrado por subscription metadata: {user_id_from_sub}")
+                        else:
+                            logger.warning(f"⚠️ Usuario {user_id_from_sub} de metadata no existe en BD")
+                            return
+                    else:
+                        logger.warning(f"⚠️ Subscription {subscription_id} no tiene metadata con user_id")
+                        return
+                except Exception as e:
+                    logger.error(f"❌ Error al obtener subscription para buscar usuario: {e}")
+                    return
+            else:
+                return
         
         user_id = profile_response.data[0]["id"]
         user_email = profile_response.data[0].get("email", "")
@@ -802,15 +862,21 @@ async def handle_invoice_paid(invoice: dict):
                     if payment_response.data:
                         print(f"✅ Pago registrado: ${amount_usd:.2f} USD para usuario {user_id} (plan: {plan_code})")
                 except Exception as insert_error:
-                    try:
-                        supabase_client.table("stripe_payments").update({
-                            "amount_usd": amount_usd,
-                            "plan_code": plan_code,
-                            "payment_date": payment_date or datetime.utcnow().isoformat()
-                        }).eq("invoice_id", invoice_id).execute()
-                        print(f"✅ Pago actualizado: ${amount_usd:.2f} USD para invoice {invoice_id}")
-                    except Exception as update_error:
-                        print(f"⚠️ No se pudo registrar/actualizar pago: {update_error}")
+                    error_msg = str(insert_error)
+                    # Si la tabla no existe, solo loguear warning (no crítico)
+                    if "PGRST205" in error_msg or "table" in error_msg.lower() and "not found" in error_msg.lower():
+                        logger.warning(f"⚠️ Tabla stripe_payments no existe. Ejecuta create_stripe_payments_table.sql para crearla.")
+                        print(f"⚠️ Tabla stripe_payments no existe. Ejecuta create_stripe_payments_table.sql para crearla.")
+                    else:
+                        try:
+                            supabase_client.table("stripe_payments").update({
+                                "amount_usd": amount_usd,
+                                "plan_code": plan_code,
+                                "payment_date": payment_date or datetime.utcnow().isoformat()
+                            }).eq("invoice_id", invoice_id).execute()
+                            print(f"✅ Pago actualizado: ${amount_usd:.2f} USD para invoice {invoice_id}")
+                        except Exception as update_error:
+                            print(f"⚠️ No se pudo registrar/actualizar pago: {update_error}")
             except Exception as payment_error:
                 print(f"⚠️ Error al registrar pago (no crítico): {payment_error}")
             
@@ -819,6 +885,8 @@ async def handle_invoice_paid(invoice: dict):
                 await process_referrer_reward(user_id, referred_by_id, invoice_id)
             
             # IMPORTANTE: Enviar emails de notificación (admin y usuario)
+            # NOTA: Para nuevas suscripciones, el email ya se envía en handle_checkout_session_completed
+            # Solo enviar email aquí para renovaciones o si checkout.session.completed no se procesó
             try:
                 from lib.email import send_admin_email, send_email
                 import threading
@@ -874,13 +942,19 @@ async def handle_invoice_paid(invoice: dict):
                 
                 def send_user_email_background():
                     try:
-                        if user_email:
+                        # IMPORTANTE: Solo enviar email al usuario si es una renovación
+                        # Para nuevas suscripciones, el email ya se envía en handle_checkout_session_completed
+                        if is_new_subscription:
+                            logger.info(f"ℹ️ Nueva suscripción detectada, email ya enviado en checkout.session.completed. Saltando envío duplicado.")
+                            return
+                        
+                        if user_email and "@" in user_email:
                             user_html = f"""
                             <html>
                             <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                                <h2 style="color: #2563eb;">Tu plan {plan_name} en Codex Trader está activo</h2>
+                                <h2 style="color: #2563eb;">Tu plan {plan_name} en Codex Trader ha sido renovado</h2>
                                 <p>Hola {user_email.split('@')[0] if '@' in user_email else 'usuario'},</p>
-                                <p>Tu plan <strong>{plan_name}</strong> en Codex Trader ha sido {'activado' if is_new_subscription else 'renovado'} correctamente.</p>
+                                <p>Tu plan <strong>{plan_name}</strong> en Codex Trader ha sido renovado correctamente.</p>
                                 
                                 <h3 style="color: #2563eb; margin-top: 20px;">Resumen:</h3>
                                 <ul>
@@ -904,7 +978,7 @@ async def handle_invoice_paid(invoice: dict):
                             """
                             send_email(
                                 to=user_email,
-                                subject=f"Tu plan {plan_name} en Codex Trader está activo",
+                                subject=f"Tu plan {plan_name} en Codex Trader ha sido renovado",
                                 html=user_html
                             )
                     except Exception as e:
@@ -913,8 +987,10 @@ async def handle_invoice_paid(invoice: dict):
                 admin_thread = threading.Thread(target=send_admin_email_background, daemon=True)
                 admin_thread.start()
                 
-                user_thread = threading.Thread(target=send_user_email_background, daemon=True)
-                user_thread.start()
+                # Solo enviar email al usuario si es renovación (no nueva suscripción)
+                if not is_new_subscription:
+                    user_thread = threading.Thread(target=send_user_email_background, daemon=True)
+                    user_thread.start()
                 
             except Exception as email_error:
                 print(f"WARNING: Error al enviar emails de notificación (no crítico): {email_error}")

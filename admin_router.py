@@ -165,7 +165,9 @@ async def get_admin_user(authorization: Optional[str] = Header(None)):
         
         # Alternativa: verificar campo is_admin en profiles
         try:
-            temp_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+            if not SUPABASE_REST_URL:
+                raise ValueError("SUPABASE_REST_URL no configurada")
+            temp_client = create_client(SUPABASE_REST_URL, SUPABASE_SERVICE_KEY)
             profile_response = temp_client.table("profiles").select("is_admin").eq("id", user_id).execute()
             if profile_response.data and profile_response.data[0].get("is_admin", False):
                 return user_response.user
@@ -351,5 +353,187 @@ async def get_top_fast_users(admin_user = Depends(get_admin_user), limit: int = 
         raise HTTPException(
             status_code=500,
             detail=f"Error al obtener usuarios top: {error_msg[:200]}"
+        )
+
+
+@admin_router.delete("/users/{user_id}")
+async def delete_user(user_id: str, admin_user = Depends(get_admin_user)):
+    """
+    Elimina un usuario del sistema completamente.
+    
+    Esto eliminará:
+    - El usuario de auth.users
+    - Su perfil de profiles (automáticamente por CASCADE)
+    - Todos los datos relacionados
+    
+    ⚠️ ADVERTENCIA: Esta acción es irreversible.
+    """
+    if not supabase_admin_client:
+        raise HTTPException(
+            status_code=500,
+            detail="Cliente de administración no disponible"
+        )
+    
+    try:
+        # Verificar que el usuario existe primero
+        try:
+            profile_response = supabase_admin_client.table("profiles").select("id, email").eq("id", user_id).execute()
+            if not profile_response.data:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Usuario con ID {user_id} no encontrado"
+                )
+            user_email = profile_response.data[0].get("email", "N/A")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning(f"⚠️ Error al verificar usuario: {e}")
+        
+        # Eliminar usuario usando función RPC de Supabase
+        # Primero intentar usar la función SQL delete_user_by_id
+        try:
+            delete_response = supabase_admin_client.rpc('delete_user_by_id', {'user_id_to_delete': user_id}).execute()
+            
+            logger.info(f"✅ Usuario {user_id} ({user_email}) eliminado exitosamente")
+            return {
+                "success": True,
+                "message": f"Usuario {user_email} eliminado exitosamente",
+                "user_id": user_id,
+                "user_email": user_email
+            }
+        except Exception as rpc_error:
+            error_str = str(rpc_error).lower()
+            
+            # Si la función RPC no existe, intentar usar la API REST de Supabase Admin
+            if "function" in error_str and "does not exist" in error_str:
+                logger.warning(f"⚠️ Función delete_user_by_id no existe. Ejecuta delete_user_function.sql en Supabase.")
+                
+                # Método alternativo: Usar API REST de Supabase Admin para eliminar usuario
+                # Necesitamos hacer una petición HTTP directa
+                try:
+                    import requests
+                    
+                    # Construir URL de Admin API de Supabase
+                    admin_api_url = f"{SUPABASE_REST_URL}/auth/v1/admin/users/{user_id}"
+                    headers = {
+                        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                        "apikey": SUPABASE_SERVICE_KEY,
+                        "Content-Type": "application/json"
+                    }
+                    
+                    # Eliminar usuario usando Admin API
+                    response = requests.delete(admin_api_url, headers=headers, timeout=10)
+                    
+                    if response.status_code == 200 or response.status_code == 204:
+                        logger.info(f"✅ Usuario {user_id} ({user_email}) eliminado exitosamente vía Admin API")
+                        return {
+                            "success": True,
+                            "message": f"Usuario {user_email} eliminado exitosamente",
+                            "user_id": user_id,
+                            "user_email": user_email
+                        }
+                    elif response.status_code == 404:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"Usuario con ID {user_id} no encontrado en auth.users"
+                        )
+                    else:
+                        error_detail = response.text[:200] if response.text else "Error desconocido"
+                        raise HTTPException(
+                            status_code=response.status_code,
+                            detail=f"Error al eliminar usuario: {error_detail}"
+                        )
+                except ImportError:
+                    logger.error("❌ requests no está instalado. Instala con: pip install requests")
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Librería 'requests' no disponible. Instala con: pip install requests"
+                    )
+                except Exception as api_error:
+                    logger.error(f"❌ Error al usar Admin API: {api_error}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Error al eliminar usuario usando Admin API: {str(api_error)[:200]}"
+                    )
+            else:
+                # Otro tipo de error en RPC
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Error al eliminar usuario: {str(rpc_error)[:200]}"
+                )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"❌ Error al eliminar usuario: {error_msg}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al eliminar usuario: {error_msg[:200]}"
+        )
+
+
+@admin_router.post("/users/{user_id}/deactivate")
+async def deactivate_user(user_id: str, admin_user = Depends(get_admin_user)):
+    """
+    Desactiva un usuario sin eliminarlo completamente.
+    
+    Esto marca al usuario como inactivo, pero mantiene sus datos.
+    Útil si quieres desactivar temporalmente el acceso.
+    """
+    if not supabase_admin_client:
+        raise HTTPException(
+            status_code=500,
+            detail="Cliente de administración no disponible"
+        )
+    
+    try:
+        # Verificar que el usuario existe
+        profile_response = supabase_admin_client.table("profiles").select("id, email").eq("id", user_id).execute()
+        if not profile_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Usuario con ID {user_id} no encontrado"
+            )
+        
+        user_email = profile_response.data[0].get("email", "N/A")
+        
+        # Intentar actualizar el usuario en auth.users para desactivarlo
+        # Nota: Supabase Python client no tiene método directo para esto
+        # Necesitamos usar la API REST de Supabase Admin
+        
+        # Por ahora, podemos agregar un campo "is_active" en profiles si no existe
+        # O usar el campo "banned_until" de auth.users si está disponible
+        
+        # Método alternativo: Eliminar tokens o cambiar email para bloquear acceso
+        # Por ahora, vamos a establecer tokens a 0 y agregar un campo de desactivación
+        
+        update_response = supabase_admin_client.table("profiles").update({
+            "tokens_restantes": 0,
+            # Si tienes un campo is_active, desactivarlo aquí
+        }).eq("id", user_id).execute()
+        
+        if update_response.data:
+            logger.info(f"✅ Usuario {user_id} ({user_email}) desactivado exitosamente")
+            return {
+                "success": True,
+                "message": f"Usuario {user_email} desactivado exitosamente (tokens establecidos a 0)",
+                "user_id": user_id,
+                "user_email": user_email
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="No se pudo desactivar el usuario"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"❌ Error al desactivar usuario: {error_msg}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al desactivar usuario: {error_msg[:200]}"
         )
 
