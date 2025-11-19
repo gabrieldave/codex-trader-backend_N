@@ -79,49 +79,16 @@ class RAGService:
                     match_count = 5  # Modo Rápido: menos chunks
                     logger.info(f"⚡ Modo Rápido: usando {match_count} chunks para respuesta rápida")
             
-            # Realizar búsqueda RPC híbrida en Supabase (keyword + vector)
-            # Si falla, usar fallback a búsqueda semántica simple
-            rows = []
-            try:
-                logger.info(f"🔎 Buscando en book_chunks usando match_documents_hybrid (top {match_count})...")
-                logger.info(f"🔍 Búsqueda híbrida: texto completo + semántica")
-                payload = {
-                    "query_text": query,
-                    "query_embedding": query_embedding,
-                    "match_count": match_count,
-                    "full_text_weight": 0.3,
-                    "semantic_weight": 1.0
-                }
-                
-                if category:
-                    payload["category_filter"] = category
-                    logger.info(f"📂 Filtro de categoría aplicado: {category}")
-                
-                rpc = self.supabase.rpc("match_documents_hybrid", payload).execute()
-                rows = rpc.data or []
-            except Exception as hybrid_error:
-                error_msg = str(hybrid_error)
-                # Si es timeout o error de función, usar fallback a búsqueda semántica simple
-                if "timeout" in error_msg.lower() or "does not exist" in error_msg.lower() or "57014" in error_msg:
-                    logger.warning(f"⚠️ Búsqueda híbrida falló ({error_msg[:100]}), usando fallback a búsqueda semántica")
-                    try:
-                        # Fallback: usar match_documents_384 (solo semántica)
-                        logger.info(f"🔄 Fallback: usando match_documents_384 (búsqueda semántica)")
-                        fallback_payload = {
-                            "query_embedding": query_embedding,
-                            "match_count": match_count
-                        }
-                        if category:
-                            fallback_payload["category_filter"] = category
-                        rpc = self.supabase.rpc("match_documents_384", fallback_payload).execute()
-                        rows = rpc.data or []
-                        logger.info(f"✅ Fallback exitoso: {len(rows)} chunks recuperados")
-                    except Exception as fallback_error:
-                        logger.error(f"❌ Fallback también falló: {str(fallback_error)[:200]}")
-                        rows = []
-                else:
-                    raise  # Re-lanzar si no es un error conocido
+            # Realizar búsqueda RPC en Supabase
+            logger.info(f"🔎 Buscando en book_chunks usando match_documents_384 (top {match_count})...")
+            payload = {"query_embedding": query_embedding, "match_count": match_count}
             
+            if category:
+                payload["category_filter"] = category
+                logger.info(f"📂 Filtro de categoría aplicado: {category}")
+            
+            rpc = self.supabase.rpc("match_documents_384", payload).execute()
+            rows = rpc.data or []
             retrieved_chunks = rows
             
             logger.info(f"🔍 [DEBUG] retrieved_chunks asignado: {len(retrieved_chunks) if retrieved_chunks else 0} chunks")
@@ -150,8 +117,8 @@ class RAGService:
             error_msg = str(e)
             # Si la función RPC no existe, es un error no crítico
             if "function" in error_msg.lower() and "does not exist" in error_msg.lower():
-                logger.warning(f"⚠️ La función RPC 'match_documents_hybrid' no existe en Supabase")
-                logger.warning("ℹ️ Ejecuta el script SQL 'create_match_documents_hybrid_function.sql' en Supabase SQL Editor")
+                logger.warning(f"⚠️ La función RPC 'match_documents_384' no existe en Supabase")
+                logger.warning("ℹ️ Ejecuta el script SQL 'create_match_documents_384_function.sql' en Supabase SQL Editor")
                 logger.warning("ℹ️ Continuando sin contexto RAG para esta consulta")
             elif "relation" in error_msg.lower() and "does not exist" in error_msg.lower():
                 logger.warning(f"⚠️ La tabla 'book_chunks' no existe en Supabase")
