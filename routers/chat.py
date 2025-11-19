@@ -4,13 +4,14 @@ Router para endpoints de chat y sesiones de conversación.
 import re
 import logging
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
 from lib.dependencies import get_user, supabase_client
 from lib.token_service import token_service
 from lib.rag_service import rag_service
 from lib.llm_service import llm_service
+from lib.vision_service import analyze_image
 from routers.models import QueryInput, CreateChatSessionInput
 
 logger = logging.getLogger(__name__)
@@ -562,4 +563,163 @@ async def update_chat_session(conversation_id: str, title: str, user = Depends(g
         raise HTTPException(
             status_code=500,
             detail=f"Error al actualizar conversación: {str(e)}"
+        )
+
+
+@chat_router.post("/chat/vision")
+async def chat_vision(
+    file: UploadFile = File(...),
+    query: str = Form(...),
+    response_mode: str = Form("Estudio Profundo"),
+    conversation_id: Optional[str] = Form(None),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    user = Depends(get_user)
+):
+    """
+    Endpoint para análisis multimodal de imágenes con RAG.
+    
+    Flujo:
+    1. Analiza la imagen con Gemini 1.5 Flash
+    2. Combina la descripción visual con la query para buscar en RAG
+    3. Genera respuesta usando contexto RAG + análisis visual
+    4. Descuenta tokens como "Estudio Profundo" (premium)
+    5. Guarda el historial del chat
+    
+    Requiere autenticación mediante token JWT de Supabase.
+    """
+    user_id = user.id
+    
+    # Paso 1: Verificar saldo de tokens
+    tokens_restantes = token_service.verify_token_balance(user_id)
+    
+    # Paso 2: Validar archivo
+    if not file.content_type or not file.content_type.startswith('image/'):
+        raise HTTPException(
+            status_code=400,
+            detail="El archivo debe ser una imagen"
+        )
+    
+    try:
+        # Paso A: Leer bytes del archivo y analizar imagen
+        image_bytes = await file.read()
+        logger.info(f"📸 Analizando imagen: {file.filename} ({len(image_bytes)} bytes)")
+        
+        descripcion_visual = await analyze_image(image_bytes)
+        logger.info(f"✅ Análisis visual completado: {len(descripcion_visual)} caracteres")
+        
+        # Paso B: Combinar query + descripción visual para búsqueda RAG
+        query_combinada = f"{query}\n\nAnálisis visual de la imagen:\n{descripcion_visual}"
+        
+        context_text = ""
+        citation_list = ""
+        retrieved_chunks = []
+        
+        # Realizar búsqueda RAG con la query combinada
+        context_text, citation_list, retrieved_chunks = await rag_service.perform_rag_search(
+            query=query_combinada,
+            category=None,
+            response_mode=response_mode or 'Estudio Profundo'
+        )
+        
+        # Paso 3: Si no hay chunks, usar solo el análisis visual
+        if not retrieved_chunks:
+            logger.warning("⚠️ No se encontraron chunks en RAG. Usando solo análisis visual.")
+            context_text = ""
+        
+        # Paso 4: Crear o verificar sesión de chat
+        if not conversation_id:
+            try:
+                session_response = supabase_client.table("chat_sessions").insert({
+                    "user_id": user_id,
+                    "title": query[:50] if len(query) > 50 else query
+                }).execute()
+                if session_response.data and len(session_response.data) > 0:
+                    conversation_id = session_response.data[0]["id"]
+                    logger.info(f"[INFO] Nueva sesión de chat creada: {conversation_id}")
+            except Exception as session_error:
+                logger.warning(f"[WARN] No se pudo crear sesión: {session_error}")
+        
+        # Paso C: Construir prompt con contexto RAG + análisis visual + pregunta
+        # El prompt se construye automáticamente en llm_service, pero necesitamos
+        # incluir el análisis visual en el contexto
+        contexto_completo = ""
+        if context_text:
+            contexto_completo = f"{context_text}\n\n"
+        contexto_completo += f"Análisis Visual de la Imagen:\n---\n{descripcion_visual}\n---\n"
+        
+        # Paso 5: Preparar estado del stream
+        # IMPORTANTE: Siempre usar "Estudio Profundo" para el cobro
+        response_mode_premium = "Estudio Profundo"
+        # Incluir análisis visual en prompt_text para cálculo de tokens más preciso
+        prompt_text_completo = f"{query}\n\n[Análisis visual incluido: {len(descripcion_visual)} caracteres]"
+        stream_state = {
+            "full_response": "",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "prompt_text": prompt_text_completo,
+            "error": None,
+            "conversation_id": conversation_id
+        }
+        
+        # Paso D: Generar stream de respuesta
+        async def stream_generator():
+            async for chunk in llm_service.generate_stream(
+                query=query,
+                context=contexto_completo,
+                citation_list=citation_list,
+                is_greeting=False,
+                response_mode=response_mode or 'Estudio Profundo',
+                stream_state=stream_state
+            ):
+                yield chunk
+        
+        # Paso E: Programar tarea en background para guardar mensajes y descontar tokens
+        # IMPORTANTE: Siempre cobrar como "Estudio Profundo" debido al doble costo de API
+        query_payload = {
+            "query": query,
+            "response_mode": response_mode_premium,
+            "conversation_id": conversation_id,
+            "has_image": True,
+            "image_filename": file.filename
+        }
+        
+        background_tasks.add_task(
+            persist_chat_background_task,
+            str(user_id),
+            query_payload,
+            stream_state,
+            tokens_restantes,
+            llm_service.get_chat_model(),
+            response_mode_premium,  # Siempre cobrar como Estudio Profundo
+            conversation_id
+        )
+        
+        # Paso 6: Retornar respuesta streaming
+        headers = {
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        }
+        if conversation_id:
+            headers["X-Conversation-Id"] = str(conversation_id)
+        
+        return StreamingResponse(
+            stream_generator(),
+            media_type="text/plain; charset=utf-8",
+            headers=headers
+        )
+        
+    except ValueError as ve:
+        # Error de configuración (ej: GOOGLE_API_KEY no configurado)
+        logger.error(f"❌ Error de configuración en análisis de imagen: {ve}")
+        raise HTTPException(
+            status_code=500,
+            detail=str(ve)
+        )
+    except Exception as e:
+        logger.error(f"❌ Error en análisis de imagen: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al procesar la imagen: {str(e)}"
         )

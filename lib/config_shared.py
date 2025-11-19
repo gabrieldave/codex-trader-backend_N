@@ -17,6 +17,9 @@ ANTHROPIC_API_KEY = None
 GOOGLE_API_KEY = None
 COHERE_API_KEY = None
 
+# Modelo de visión para análisis de imágenes
+VISION_MODEL = "gemini-1.5-flash"
+
 
 def init_shared_config(
     client,
