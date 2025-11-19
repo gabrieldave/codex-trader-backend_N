@@ -1130,13 +1130,18 @@ Responde siempre en español."""
                 response_stream = None
                 try:
                     response_stream = litellm.completion(**litellm_params)
+                    chunk_count = 0
                     for chunk in response_stream:
                         usage_chunk = getattr(chunk, "usage", None)
                         if usage_chunk:
                             assign_usage_values(usage_chunk)
                         delta_text = extract_delta_text(chunk)
                         if delta_text:
+                            chunk_count += 1
                             stream_state["full_response"] += delta_text
+                            # Log cada 10 chunks para no saturar logs
+                            if chunk_count % 10 == 0:
+                                logger.debug(f"[STREAM] Chunk {chunk_count} enviado: {len(delta_text)} chars")
                             yield delta_text
                     final_response = getattr(response_stream, "final_response", None)
                     if final_response:
@@ -1170,11 +1175,19 @@ Responde siempre en español."""
                 conversation_id
             )
 
-            headers = {}
+            headers = {
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            }
             if conversation_id:
                 headers["X-Conversation-Id"] = str(conversation_id)
 
-            return StreamingResponse(stream_generator(), media_type="text/plain", headers=headers)
+            return StreamingResponse(
+                stream_generator(), 
+                media_type="text/plain; charset=utf-8", 
+                headers=headers
+            )
         else:
             # Si no hay chunks recuperados y no es saludo, usar un prompt genérico
             logger.warning("⚠️ No se encontraron chunks en RAG. Respondiendo sin contexto específico.")
