@@ -13,6 +13,23 @@ from lib.config_shared import GOOGLE_API_KEY, VISION_MODEL
 logger = logging.getLogger(__name__)
 
 
+def _get_available_models():
+    """
+    Obtiene la lista de modelos disponibles de Gemini.
+    """
+    try:
+        models = genai.list_models()
+        available_models = []
+        for model in models:
+            # Filtrar solo modelos que soporten generateContent
+            if 'generateContent' in model.supported_generation_methods:
+                available_models.append(model.name.replace('models/', ''))
+        return available_models
+    except Exception as e:
+        logger.warning(f"Error al listar modelos: {e}")
+        return []
+
+
 def _analyze_image_sync(image_bytes: bytes) -> str:
     """
     Función síncrona interna para analizar la imagen.
@@ -24,14 +41,27 @@ def _analyze_image_sync(image_bytes: bytes) -> str:
     # Configurar el cliente de Google Generative AI
     genai.configure(api_key=GOOGLE_API_KEY)
     
-    # Intentar con diferentes nombres de modelo si el primero falla
-    model_names = [
-        VISION_MODEL,  # Intentar primero con el configurado
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "gemini-pro-vision",
-        "gemini-pro"
-    ]
+    # Primero, intentar obtener la lista de modelos disponibles
+    logger.info("Obteniendo lista de modelos disponibles de Gemini...")
+    available_models = _get_available_models()
+    
+    if available_models:
+        logger.info(f"Modelos disponibles: {', '.join(available_models[:5])}...")  # Mostrar primeros 5
+        # Priorizar modelos que probablemente soporten visión
+        vision_models = [m for m in available_models if 'flash' in m.lower() or 'vision' in m.lower() or '1.5' in m.lower()]
+        if vision_models:
+            model_names = vision_models + [m for m in available_models if m not in vision_models]
+        else:
+            model_names = available_models
+    else:
+        # Si no podemos listar modelos, usar lista por defecto
+        logger.warning("No se pudieron listar modelos, usando lista por defecto")
+        model_names = [
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
+            "gemini-pro",
+            "gemini-pro-vision"
+        ]
     
     model = None
     last_error = None
@@ -39,8 +69,7 @@ def _analyze_image_sync(image_bytes: bytes) -> str:
     for model_name in model_names:
         try:
             model = genai.GenerativeModel(model_name)
-            # Hacer una prueba rápida para verificar que el modelo funciona
-            logger.info(f"Intentando usar modelo: {model_name}")
+            logger.info(f"Modelo {model_name} inicializado correctamente")
             break
         except Exception as e:
             last_error = e
@@ -48,11 +77,14 @@ def _analyze_image_sync(image_bytes: bytes) -> str:
             continue
     
     if model is None:
-        raise ValueError(
+        error_msg = (
             f"No se pudo inicializar ningún modelo de Gemini. Último error: {last_error}. "
-            f"Modelos intentados: {', '.join(model_names)}. "
-            "Verifica que GOOGLE_API_KEY sea válida y que tengas acceso a los modelos de Gemini."
+            f"Modelos intentados: {', '.join(model_names[:5])}. "
         )
+        if available_models:
+            error_msg += f"Modelos disponibles en tu cuenta: {', '.join(available_models[:10])}. "
+        error_msg += "Verifica que GOOGLE_API_KEY sea válida y que tengas acceso a los modelos de Gemini."
+        raise ValueError(error_msg)
     
     # Convertir los bytes de la imagen a un objeto PIL Image
     image = Image.open(io.BytesIO(image_bytes))
