@@ -698,6 +698,7 @@ Crear archivo `.env` en la raíz del proyecto:
 # Supabase
 SUPABASE_URL=https://tu-proyecto.supabase.co
 SUPABASE_SERVICE_KEY=tu-service-key
+SUPABASE_DB_URL=postgresql://postgres.tu-proyecto:password@aws-0-us-west-1.pooler.supabase.com:5432/postgres
 SUPABASE_DB_PASSWORD=tu-password
 
 # OpenAI
