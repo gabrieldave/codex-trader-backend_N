@@ -674,23 +674,41 @@ async def notify_user_registration(
             profile_data = profile_response.data[0]
         
         # Verificar si ya se envió el email de bienvenida (flag en base de datos)
-        # PERMITIR reenvío si viene del trigger o si se solicita explícitamente
+        # PERMITIR reenvío si:
+        # 1. Viene del trigger (database_trigger)
+        # 2. Se solicita explícitamente (force_resend)
+        # 3. Viene del callback del frontend (tiene Authorization header) Y el email NO se ha enviado
         welcome_email_already_sent = profile_data.get("welcome_email_sent", False)
         force_resend = input_data and getattr(input_data, 'force_resend', False)
         is_trigger_call = input_data and input_data.triggered_by == 'database_trigger'
+        is_callback_call = bool(authorization)  # Si viene del callback, tiene Authorization header
         
-        if welcome_email_already_sent and not force_resend and not is_trigger_call:
-            logger.info(f"[EMAIL] Email de bienvenida ya fue enviado anteriormente para {user_email}. Saltando envío.")
-            print(f"   [INFO] Email de bienvenida ya fue enviado anteriormente. Saltando envío.")
-            return {
-                "success": True,
-                "message": "Email de bienvenida ya fue enviado anteriormente",
-                "already_sent": True
-            }
-        
-        if welcome_email_already_sent and (force_resend or is_trigger_call):
-            logger.info(f"[EMAIL] Reenviando email de bienvenida para {user_email} (force_resend={force_resend}, is_trigger={is_trigger_call})")
-            print(f"   [INFO] Reenviando email de bienvenida (force_resend={force_resend}, is_trigger={is_trigger_call})")
+        # Si viene del callback y el email NO se ha enviado, permitir envío
+        # Si viene del callback y el email YA se envió, NO reenviar (evitar spam)
+        # Si viene del trigger, siempre intentar enviar (puede ser primera vez o reenvío)
+        if welcome_email_already_sent:
+            if is_callback_call:
+                # Callback: NO reenviar si ya se envió (evitar spam por múltiples clics)
+                logger.info(f"[EMAIL] Email de bienvenida ya fue enviado anteriormente para {user_email}. Callback detectado, pero no reenviando para evitar spam.")
+                print(f"   [INFO] Email de bienvenida ya fue enviado anteriormente. No reenviando desde callback.")
+                return {
+                    "success": True,
+                    "message": "Email de bienvenida ya fue enviado anteriormente",
+                    "already_sent": True
+                }
+            elif force_resend or is_trigger_call:
+                # Trigger o force_resend: permitir reenvío
+                logger.info(f"[EMAIL] Reenviando email de bienvenida para {user_email} (force_resend={force_resend}, is_trigger={is_trigger_call})")
+                print(f"   [INFO] Reenviando email de bienvenida (force_resend={force_resend}, is_trigger={is_trigger_call})")
+            else:
+                # Otro caso: no reenviar
+                logger.info(f"[EMAIL] Email de bienvenida ya fue enviado anteriormente para {user_email}. Saltando envío.")
+                print(f"   [INFO] Email de bienvenida ya fue enviado anteriormente. Saltando envío.")
+                return {
+                    "success": True,
+                    "message": "Email de bienvenida ya fue enviado anteriormente",
+                    "already_sent": True
+                }
         
         # Asegurar que tenemos el referral_code (usar el que acabamos de asignar o el del perfil)
         if not referral_code or referral_code == "No disponible":
