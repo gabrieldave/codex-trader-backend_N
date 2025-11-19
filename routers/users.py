@@ -823,6 +823,60 @@ async def notify_user_registration(
             # Obtener nombre del usuario desde el email (parte antes del @)
             user_name = user_email.split('@')[0] if '@' in user_email else 'usuario'
             
+            # Obtener contraseña si está disponible en input_data
+            user_password = input_data.password if input_data and input_data.password else None
+            
+            # Construir sección de credenciales si hay contraseña
+            credentials_section = ""
+            if user_password:
+                credentials_section = f"""
+                    <!-- Bloque: Tus credenciales de acceso -->
+                    <div style="background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); border: 2px solid #10b981; padding: 25px; border-radius: 12px; margin: 30px 0; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.1);">
+                        <h3 style="color: #059669; margin-top: 0; font-size: 20px; margin-bottom: 15px; text-align: center;">
+                            🔐 Tus credenciales de acceso
+                        </h3>
+                        <p style="font-size: 14px; color: #065f46; margin-bottom: 20px; text-align: center;">
+                            Guarda esta información de forma segura. La necesitarás para iniciar sesión:
+                        </p>
+                        <div style="background: #ffffff; padding: 20px; border-radius: 8px; border: 1px dashed #10b981; margin: 15px 0;">
+                            <div style="margin-bottom: 15px;">
+                                <p style="margin: 0 0 5px 0; font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">
+                                    📧 Usuario (Email):
+                                </p>
+                                <p style="margin: 0; font-size: 16px; font-weight: 700; color: #1f2937; font-family: monospace; word-break: break-all; padding: 10px; background: #f9fafb; border-radius: 6px;">
+                                    {user_email}
+                                </p>
+                            </div>
+                            <div>
+                                <p style="margin: 0 0 5px 0; font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">
+                                    🔑 Contraseña:
+                                </p>
+                                <p style="margin: 0; font-size: 16px; font-weight: 700; color: #1f2937; font-family: monospace; padding: 10px; background: #f9fafb; border-radius: 6px; letter-spacing: 2px;">
+                                    {user_password}
+                                </p>
+                            </div>
+                        </div>
+                        <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; border-radius: 6px; margin-top: 15px;">
+                            <p style="margin: 0; font-size: 13px; color: #92400e; line-height: 1.5;">
+                                <strong>⚠️ Importante:</strong> Después de confirmar tu email, deberás iniciar sesión manualmente usando estas credenciales. No se iniciará sesión automáticamente por seguridad.
+                            </p>
+                        </div>
+                    </div>
+                """
+            else:
+                credentials_section = f"""
+                    <!-- Bloque: Información de acceso -->
+                    <div style="background: #f0f9ff; border-left: 4px solid #3b82f6; padding: 20px; border-radius: 8px; margin: 30px 0;">
+                        <p style="margin: 0; font-size: 14px; color: #1e40af; line-height: 1.6;">
+                            <strong>📧 Tu usuario:</strong> {user_email}<br>
+                            <strong>🔑 Tu contraseña:</strong> La que ingresaste al registrarte
+                        </p>
+                        <p style="margin: 10px 0 0 0; font-size: 13px; color: #1e40af;">
+                            Después de confirmar tu email, deberás iniciar sesión manualmente usando estas credenciales.
+                        </p>
+                    </div>
+                """
+            
             welcome_html = f"""
             <html>
             <body style="font-family: Arial, sans-serif; line-height: 1.8; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -837,7 +891,9 @@ async def notify_user_registration(
                             Hola <strong>{user_email}</strong>, bienvenido a Codex Trader.
                         </p>
                         
-                        <div style="background: #f9fafb; padding: 20px; border-radius: 8px; border-left: 4px solid #2563eb;">
+                        {credentials_section}
+                        
+                        <div style="background: #f9fafb; padding: 20px; border-radius: 8px; border-left: 4px solid #2563eb; margin-top: 20px;">
                             <ul style="list-style: none; padding: 0; margin: 0;">
                                 <li style="margin-bottom: 10px; color: #333;">
                                     <strong>Plan actual:</strong> Modo prueba (sin suscripción)
