@@ -956,6 +956,9 @@ async def notify_user_registration(
                         <a href="{app_url}" style="display: inline-block; background: #2563eb; color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px;">
                             🚀 Empieza aquí
                         </a>
+                        <p style="margin: 15px 0 0 0; font-size: 12px; color: #6b7280; font-style: italic;">
+                            💡 Tip: Este enlace abrirá en la misma pestaña donde confirmaste tu email
+                        </p>
                     </div>
                     
                     <!-- Bloque: Invita a tus amigos y gana tokens -->
