@@ -38,6 +38,8 @@ class NotifyRegistrationInput(BaseModel):
     token_hash: Optional[str] = None
     user_id: Optional[str] = None
     triggered_by: Optional[str] = None
+    password: Optional[str] = None  # Contraseña del usuario para incluir en email de bienvenida
+    force_resend: Optional[bool] = False  # Forzar reenvío incluso si ya se envió antes
 
 
 class ProcessReferralInput(BaseModel):

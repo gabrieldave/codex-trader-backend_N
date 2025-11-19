@@ -674,8 +674,12 @@ async def notify_user_registration(
             profile_data = profile_response.data[0]
         
         # Verificar si ya se envió el email de bienvenida (flag en base de datos)
+        # PERMITIR reenvío si viene del trigger o si se solicita explícitamente
         welcome_email_already_sent = profile_data.get("welcome_email_sent", False)
-        if welcome_email_already_sent:
+        force_resend = input_data and getattr(input_data, 'force_resend', False)
+        is_trigger_call = input_data and input_data.triggered_by == 'database_trigger'
+        
+        if welcome_email_already_sent and not force_resend and not is_trigger_call:
             logger.info(f"[EMAIL] Email de bienvenida ya fue enviado anteriormente para {user_email}. Saltando envío.")
             print(f"   [INFO] Email de bienvenida ya fue enviado anteriormente. Saltando envío.")
             return {
@@ -683,6 +687,10 @@ async def notify_user_registration(
                 "message": "Email de bienvenida ya fue enviado anteriormente",
                 "already_sent": True
             }
+        
+        if welcome_email_already_sent and (force_resend or is_trigger_call):
+            logger.info(f"[EMAIL] Reenviando email de bienvenida para {user_email} (force_resend={force_resend}, is_trigger={is_trigger_call})")
+            print(f"   [INFO] Reenviando email de bienvenida (force_resend={force_resend}, is_trigger={is_trigger_call})")
         
         # Asegurar que tenemos el referral_code (usar el que acabamos de asignar o el del perfil)
         if not referral_code or referral_code == "No disponible":
