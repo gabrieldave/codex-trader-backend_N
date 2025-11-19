@@ -79,15 +79,22 @@ class RAGService:
                     match_count = 5  # Modo Rápido: menos chunks
                     logger.info(f"⚡ Modo Rápido: usando {match_count} chunks para respuesta rápida")
             
-            # Realizar búsqueda RPC en Supabase
-            logger.info(f"🔎 Buscando en book_chunks usando match_documents_384 (top {match_count})...")
-            payload = {"query_embedding": query_embedding, "match_count": match_count}
+            # Realizar búsqueda RPC híbrida en Supabase (keyword + vector)
+            logger.info(f"🔎 Buscando en book_chunks usando match_documents_hybrid (top {match_count})...")
+            logger.info(f"🔍 Búsqueda híbrida: texto completo + semántica")
+            payload = {
+                "query_text": query,
+                "query_embedding": query_embedding,
+                "match_count": match_count,
+                "full_text_weight": 1.0,
+                "semantic_weight": 1.0
+            }
             
             if category:
                 payload["category_filter"] = category
                 logger.info(f"📂 Filtro de categoría aplicado: {category}")
             
-            rpc = self.supabase.rpc("match_documents_384", payload).execute()
+            rpc = self.supabase.rpc("match_documents_hybrid", payload).execute()
             rows = rpc.data or []
             retrieved_chunks = rows
             
@@ -117,8 +124,8 @@ class RAGService:
             error_msg = str(e)
             # Si la función RPC no existe, es un error no crítico
             if "function" in error_msg.lower() and "does not exist" in error_msg.lower():
-                logger.warning(f"⚠️ La función RPC 'match_documents_384' no existe en Supabase")
-                logger.warning("ℹ️ Ejecuta el script SQL 'create_match_documents_384_function.sql' en Supabase SQL Editor")
+                logger.warning(f"⚠️ La función RPC 'match_documents_hybrid' no existe en Supabase")
+                logger.warning("ℹ️ Ejecuta el script SQL 'create_match_documents_hybrid_function.sql' en Supabase SQL Editor")
                 logger.warning("ℹ️ Continuando sin contexto RAG para esta consulta")
             elif "relation" in error_msg.lower() and "does not exist" in error_msg.lower():
                 logger.warning(f"⚠️ La tabla 'book_chunks' no existe en Supabase")
@@ -141,11 +148,15 @@ class RAGService:
         """
         doc_ids = set()
         for row in chunks:
-            metadata = row.get("metadata", {})
-            if isinstance(metadata, dict):
-                doc_id = metadata.get("doc_id")
-                if doc_id:
-                    doc_ids.add(doc_id)
+            # La función híbrida retorna doc_id directamente, pero también puede estar en metadata
+            doc_id = row.get("doc_id")
+            if not doc_id:
+                # Fallback: buscar en metadata si no está en el nivel superior
+                metadata = row.get("metadata", {})
+                if isinstance(metadata, dict):
+                    doc_id = metadata.get("doc_id")
+            if doc_id:
+                doc_ids.add(doc_id)
         
         doc_id_to_filename = {}
         if doc_ids:
