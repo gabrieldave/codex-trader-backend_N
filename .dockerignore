@@ -3,23 +3,53 @@
 .gitignore
 .dockerignore
 .vscode/
+.idea/
 
 # Ignorar el entorno virtual local
 venv_ingesta/
 venv/
 .venv/
+env/
+ENV/
 
 # Ignorar secretos
 .env
 *.env
+.env.local
+.env.*.local
 
 # ¡EL MÁS IMPORTANTE! Ignorar los 10GB de libros
 data/
+*.pdf
+*.epub
+*.docx
 
 # Caché de Python y otros
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
 *.log
+*.sql
+*.md
+*.bat
+*.sh
+
+# Archivos de desarrollo y testing
+test_*.py
+*_test.py
+*.test.py
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Archivos temporales y de sistema
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
 
 
 
