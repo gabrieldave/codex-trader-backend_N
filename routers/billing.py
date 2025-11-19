@@ -806,9 +806,21 @@ async def handle_invoice_paid(invoice: dict):
         
         if invoice_id:
             # Verificar si ya se procesó esta recompensa (idempotencia)
-            reward_event_check = supabase_client.table("referral_reward_events").select("id").eq("invoice_id", invoice_id).execute()
+            # IMPORTANTE: Manejar el caso cuando la tabla referral_reward_events no existe
+            try:
+                reward_event_check = supabase_client.table("referral_reward_events").select("id").eq("invoice_id", invoice_id).execute()
+                already_processed = bool(reward_event_check.data)
+            except Exception as table_error:
+                error_msg = str(table_error)
+                if "PGRST205" in error_msg or "table" in error_msg.lower() and "not found" in error_msg.lower():
+                    logger.warning(f"⚠️ Tabla referral_reward_events no existe. Ejecuta add_referral_rewards_system.sql para crearla.")
+                    print(f"⚠️ Tabla referral_reward_events no existe. El sistema de referidos no funcionará correctamente hasta que se cree la tabla.")
+                    already_processed = False  # Asumir que no está procesada si la tabla no existe
+                else:
+                    logger.error(f"❌ Error al verificar referral_reward_events: {table_error}")
+                    already_processed = False
             
-            if not reward_event_check.data:
+            if not already_processed:
                 # Esta invoice no ha sido procesada antes, verificar si es primera suscripción
                 profile_check = supabase_client.table("profiles").select(
                     "referred_by_user_id, has_generated_referral_reward"
@@ -1029,10 +1041,21 @@ async def process_referrer_reward(user_id: str, referrer_id: str, invoice_id: st
             return
         
         # Verificar idempotencia: esta invoice no debe haber sido procesada
-        reward_event_check = supabase_client.table("referral_reward_events").select("id").eq("invoice_id", invoice_id).execute()
-        if reward_event_check.data:
-            print(f"ℹ️ Recompensa para invoice {invoice_id} ya fue procesada (idempotencia)")
-            return
+        # IMPORTANTE: Manejar el caso cuando la tabla referral_reward_events no existe
+        try:
+            reward_event_check = supabase_client.table("referral_reward_events").select("id").eq("invoice_id", invoice_id).execute()
+            if reward_event_check.data:
+                print(f"ℹ️ Recompensa para invoice {invoice_id} ya fue procesada (idempotencia)")
+                return
+        except Exception as table_error:
+            error_msg = str(table_error)
+            if "PGRST205" in error_msg or "table" in error_msg.lower() and "not found" in error_msg.lower():
+                logger.warning(f"⚠️ Tabla referral_reward_events no existe. Ejecuta add_referral_rewards_system.sql para crearla.")
+                print(f"⚠️ Tabla referral_reward_events no existe. Continuando sin idempotencia (riesgo de duplicados).")
+                # Continuar sin la verificación de idempotencia si la tabla no existe
+            else:
+                logger.error(f"❌ Error al verificar referral_reward_events: {table_error}")
+                return  # Si es otro error, salir por seguridad
         
         # Recompensa: 10,000 tokens
         reward_amount = 10000
@@ -1050,16 +1073,32 @@ async def process_referrer_reward(user_id: str, referrer_id: str, invoice_id: st
         
         if update_response.data:
             # Registrar evento para idempotencia
-            event_response = supabase_client.table("referral_reward_events").insert({
-                "invoice_id": invoice_id,
-                "user_id": user_id,
-                "referrer_id": referrer_id,
-                "reward_type": "first_payment",
-                "tokens_granted": reward_amount
-            }).execute()
+            # IMPORTANTE: Manejar el caso cuando la tabla referral_reward_events no existe
+            event_registered = False
+            try:
+                event_response = supabase_client.table("referral_reward_events").insert({
+                    "invoice_id": invoice_id,
+                    "user_id": user_id,
+                    "referrer_id": referrer_id,
+                    "reward_type": "first_payment",
+                    "tokens_granted": reward_amount
+                }).execute()
+                event_registered = bool(event_response.data)
+            except Exception as table_error:
+                error_msg = str(table_error)
+                if "PGRST205" in error_msg or "table" in error_msg.lower() and "not found" in error_msg.lower():
+                    logger.warning(f"⚠️ Tabla referral_reward_events no existe. No se puede registrar el evento para idempotencia.")
+                    print(f"⚠️ Tabla referral_reward_events no existe. Recompensa otorgada pero evento no registrado.")
+                    event_registered = False
+                else:
+                    logger.error(f"❌ Error al registrar evento en referral_reward_events: {table_error}")
+                    event_registered = False
             
-            if event_response.data:
+            # Continuar con el proceso aunque no se haya registrado el evento
+            if True:  # Siempre continuar, incluso si el evento no se registró
                 print(f"✅ Recompensa otorgada: {reward_amount:,} tokens a referrer {referrer_id} por invitado {user_id} (invoice: {invoice_id})")
+                if not event_registered:
+                    print(f"⚠️ ADVERTENCIA: Evento no registrado en referral_reward_events. Ejecuta add_referral_rewards_system.sql para habilitar idempotencia.")
                 
                 # IMPORTANTE: Enviar email al referrer notificando la recompensa
                 try:
@@ -1158,8 +1197,7 @@ async def process_referrer_reward(user_id: str, referrer_id: str, invoice_id: st
                         print(f"⚠️ No se encontró email para referrer {referrer_id}")
                 except Exception as email_error:
                     print(f"⚠️ Error al enviar email de recompensa (no crítico): {email_error}")
-            else:
-                print(f"⚠️ Recompensa otorgada pero no se pudo registrar evento para invoice {invoice_id}")
+            # El else ya no es necesario porque siempre continuamos
         else:
             print(f"⚠️ No se pudo actualizar referrer {referrer_id}")
             
