@@ -282,7 +282,7 @@ async def chat(query_input: QueryInput, background_tasks: BackgroundTasks, user 
         query_input.dict(),
         stream_state,
         tokens_restantes,
-        llm_service._get_chat_model(),
+        llm_service.get_chat_model(),
         response_mode,
         conversation_id
     )
