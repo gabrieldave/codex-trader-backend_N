@@ -3862,6 +3862,107 @@ async def process_referrer_reward(user_id: str, referrer_id: str, invoice_id: st
             
             if event_response.data:
                 print(f"✅ Recompensa otorgada: {reward_amount:,} tokens a referrer {referrer_id} por invitado {user_id} (invoice: {invoice_id})")
+                
+                # IMPORTANTE: Enviar email al referrer notificando la recompensa
+                try:
+                    from lib.email import send_email
+                    from datetime import datetime
+                    import threading
+                    
+                    # Obtener email del referrer
+                    referrer_email_response = supabase_client.table("profiles").select(
+                        "email"
+                    ).eq("id", referrer_id).execute()
+                    
+                    # Obtener email del usuario que pagó (invitado)
+                    invited_user_response = supabase_client.table("profiles").select(
+                        "email"
+                    ).eq("id", user_id).execute()
+                    
+                    referrer_email = referrer_email_response.data[0].get("email") if referrer_email_response.data else None
+                    invited_user_email = invited_user_response.data[0].get("email") if invited_user_response.data else "un usuario"
+                    
+                    if referrer_email:
+                        def send_referrer_reward_email():
+                            try:
+                                # Construir URL del frontend
+                                frontend_url = os.getenv("FRONTEND_URL", "https://www.codextrader.tech").strip('"').strip("'").strip()
+                                app_url = frontend_url.rstrip('/')
+                                
+                                referrer_html = f"""
+                                <html>
+                                <body style="font-family: Arial, sans-serif; line-height: 1.8; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+                                    <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+                                        <h1 style="color: white; margin: 0; font-size: 28px;">¡Recompensa de Referido! 🎉</h1>
+                                    </div>
+                                    
+                                    <div style="background: #ffffff; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                                        <p style="font-size: 16px; margin-bottom: 20px;">
+                                            Hola <strong>{referrer_email.split('@')[0] if '@' in referrer_email else 'trader'}</strong>,
+                                        </p>
+                                        
+                                        <p style="font-size: 16px; margin-bottom: 20px;">
+                                            ¡Excelentes noticias! Uno de tus referidos ha pagado su primera suscripción y has ganado una recompensa.
+                                        </p>
+                                        
+                                        <div style="background: #f0fdf4; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
+                                            <h3 style="color: #059669; margin-top: 0;">Detalles de tu recompensa:</h3>
+                                            <ul style="list-style: none; padding: 0; margin: 0;">
+                                                <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
+                                                    <strong style="color: #059669;">Referido:</strong> 
+                                                    <span style="color: #333;">{invited_user_email}</span>
+                                                </li>
+                                                <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
+                                                    <strong style="color: #059669;">Tokens recibidos:</strong> 
+                                                    <span style="color: #10b981; font-weight: bold; font-size: 18px;">+{reward_amount:,} tokens</span>
+                                                </li>
+                                                <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
+                                                    <strong style="color: #059669;">Total de bonos usados:</strong> 
+                                                    <span style="color: #333;">{rewards_count + 1} / 5</span>
+                                                </li>
+                                                <li style="margin-bottom: 0;">
+                                                    <strong style="color: #059669;">Tokens totales ganados por referidos:</strong> 
+                                                    <span style="color: #333; font-weight: bold;">{referrer.get("referral_tokens_earned", 0) + reward_amount:,} tokens</span>
+                                                </li>
+                                            </ul>
+                                        </div>
+                                        
+                                        <div style="text-align: center; margin: 30px 0;">
+                                            <a href="{app_url}/invitar" style="display: inline-block; background: #10b981; color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px;">
+                                                📊 Ver mis estadísticas de referidos
+                                            </a>
+                                        </div>
+                                        
+                                        <p style="font-size: 14px; color: #666; margin-top: 30px;">
+                                            <strong>¿Quieres ganar más tokens?</strong> Comparte tu enlace de referido con más traders. 
+                                            Puedes ganar hasta 5 bonos de 10,000 tokens cada uno.
+                                        </p>
+                                        
+                                        <p style="font-size: 12px; color: #666; margin-top: 30px; text-align: center; border-top: 1px solid #e5e7eb; padding-top: 20px;">
+                                            ¡Gracias por compartir Codex Trader con otros traders!
+                                        </p>
+                                    </div>
+                                </body>
+                                </html>
+                                """
+                                
+                                send_email(
+                                    to=referrer_email,
+                                    subject=f"¡Ganaste {reward_amount:,} tokens por tu referido! - Codex Trader",
+                                    html=referrer_html
+                                )
+                                print(f"✅ Email de recompensa enviado a referrer {referrer_email}")
+                            except Exception as e:
+                                print(f"⚠️ Error al enviar email de recompensa al referrer: {e}")
+                        
+                        # Enviar email en background (no bloquea)
+                        email_thread = threading.Thread(target=send_referrer_reward_email, daemon=True)
+                        email_thread.start()
+                    else:
+                        print(f"⚠️ No se encontró email para referrer {referrer_id}")
+                except Exception as email_error:
+                    # No es crítico si falla el email
+                    print(f"⚠️ Error al enviar email de recompensa (no crítico): {email_error}")
             else:
                 print(f"⚠️ Recompensa otorgada pero no se pudo registrar evento para invoice {invoice_id}")
         else:
