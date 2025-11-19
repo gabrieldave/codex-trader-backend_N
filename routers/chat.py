@@ -9,7 +9,8 @@ import json
 import time
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi.responses import StreamingResponse
 
 from lib.dependencies import get_user, supabase_client
 from lib.config_shared import (
@@ -20,6 +21,7 @@ from lib.config_shared import (
 from routers.models import QueryInput, CreateChatSessionInput
 import config
 import litellm
+from lib.model_usage import log_model_usage_from_response
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +76,375 @@ def is_simple_greeting(message: str) -> bool:
     return all_greetings and not has_trading_content and len(words) > 0
 
 
+def persist_chat_background_task(
+    user_id: str,
+    query_payload: dict,
+    stream_state: dict,
+    tokens_restantes: int,
+    chat_model: str,
+    response_mode: str,
+    conversation_id: Optional[str],
+):
+    """
+    Guarda los mensajes y actualiza los tokens después de finalizar el streaming.
+    Se ejecuta en background para no bloquear la respuesta al usuario.
+    """
+    try:
+        if stream_state.get("error"):
+            logger.warning(f"[BG] Stream finalizó con error, no se guardará historial: {stream_state['error']}")
+            return
+        
+        respuesta_texto = (stream_state.get("full_response") or "").strip()
+        if not respuesta_texto:
+            logger.warning("[BG] No hay respuesta para guardar en historial.")
+            return
+        
+        prompt_text = stream_state.get("prompt_text") or query_payload.get("query") or ""
+        input_tokens = stream_state.get("input_tokens") or 0
+        output_tokens = stream_state.get("output_tokens") or 0
+        total_tokens_usados = stream_state.get("total_tokens") or 0
+        
+        if total_tokens_usados == 0:
+            input_tokens = len(prompt_text) // 4
+            output_tokens = len(respuesta_texto) // 4
+            total_tokens_usados = max(100 if respuesta_texto else 0, input_tokens + output_tokens)
+        
+        tokens_usados = total_tokens_usados
+        nuevos_tokens = tokens_restantes - tokens_usados
+        
+        # Registrar uso del modelo (no crítico si falla)
+        try:
+            log_model_usage_from_response(
+                user_id=str(user_id),
+                model=chat_model,
+                tokens_input=input_tokens,
+                tokens_output=output_tokens
+            )
+        except Exception as usage_error:
+            logger.warning(f"[BG] Error al registrar uso de modelo: {usage_error}")
+        
+        print("=" * 60)
+        print(f"[BG] Modelo: {chat_model}")
+        print(f"[BG] Input tokens: {input_tokens}")
+        print(f"[BG] Output tokens: {output_tokens}")
+        print(f"[BG] Total tokens: {total_tokens_usados}")
+        print(f"[BG] Tokens restantes antes: {tokens_restantes}")
+        print("=" * 60)
+        
+        # Guardar log en archivo local
+        try:
+            log_entry = {
+                "timestamp": datetime.now().isoformat(),
+                "user_id": str(user_id),
+                "model": chat_model,
+                "query_preview": (prompt_text[:50] + "...") if len(prompt_text) > 50 else prompt_text,
+                "response_mode": response_mode,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens_usados,
+                "tokens_antes": tokens_restantes,
+                "tokens_despues": nuevos_tokens
+            }
+            log_file = "tokens_log.json"
+            log_data = []
+            if os.path.exists(log_file):
+                try:
+                    with open(log_file, "r", encoding="utf-8") as f:
+                        log_data = json.load(f)
+                except Exception:
+                    log_data = []
+            log_data.append(log_entry)
+            if len(log_data) > 100:
+                log_data = log_data[-100:]
+            with open(log_file, "w", encoding="utf-8") as f:
+                json.dump(log_data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"[BG] ⚠ No se pudo guardar log de tokens: {e}")
+        
+        update_data = {
+            "tokens_restantes": nuevos_tokens
+        }
+        
+        # Lógica de fair use (incluye emails y avisos)
+        try:
+            profile_fair_use = supabase_client.table("profiles").select(
+                "tokens_monthly_limit, fair_use_warning_shown, fair_use_discount_eligible, fair_use_discount_used"
+            ).eq("id", user_id).execute()
+            
+            if profile_fair_use.data:
+                profile = profile_fair_use.data[0]
+                tokens_monthly_limit = profile.get("tokens_monthly_limit") or 0
+                
+                if tokens_monthly_limit > 0:
+                    tokens_usados_total = tokens_monthly_limit - nuevos_tokens
+                    usage_percent = (tokens_usados_total / tokens_monthly_limit) * 100
+                    
+                    if usage_percent >= 80 and not profile.get("fair_use_warning_shown", False):
+                        update_data["fair_use_warning_shown"] = True
+                        print(f"[BG] WARNING: Usuario {user_id} alcanzó 80% de uso ({usage_percent:.1f}%)")
+                        
+                        try:
+                            from lib.email import send_admin_email
+                            
+                            user_email_response = supabase_client.table("profiles").select("email, current_plan").eq("id", user_id).execute()
+                            user_email = user_email_response.data[0].get("email") if user_email_response.data else None
+                            current_plan = user_email_response.data[0].get("current_plan", "N/A") if user_email_response.data else "N/A"
+                            
+                            def send_admin_80_percent_email():
+                                try:
+                                    admin_html = f"""
+                                    <html>
+                                    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+                                        <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 20px; text-align: center; border-radius: 10px 10px 0 0;">
+                                            <h2 style="color: white; margin: 0; font-size: 24px;">⚠️ Alerta: Usuario alcanzó 80% de límite</h2>
+                                        </div>
+                                        
+                                        <div style="background: #ffffff; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                                            <p style="font-size: 16px; margin-bottom: 20px;">
+                                                Un usuario ha alcanzado el <strong>80% de su límite mensual de tokens</strong>.
+                                            </p>
+                                            
+                                            <div style="background: #fef3c7; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">
+                                                <ul style="list-style: none; padding: 0; margin: 0;">
+                                                    <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
+                                                        <strong style="color: #92400e;">Email del usuario:</strong> 
+                                                        <span style="color: #333;">{user_email or 'N/A'}</span>
+                                                    </li>
+                                                    <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
+                                                        <strong style="color: #92400e;">ID de usuario:</strong> 
+                                                        <span style="color: #333; font-family: monospace; font-size: 12px;">{user_id}</span>
+                                                    </li>
+                                                    <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
+                                                        <strong style="color: #92400e;">Plan actual:</strong> 
+                                                        <span style="color: #333;">{current_plan}</span>
+                                                    </li>
+                                                    <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
+                                                        <strong style="color: #92400e;">Límite mensual:</strong> 
+                                                        <span style="color: #333;">{tokens_monthly_limit:,} tokens</span>
+                                                    </li>
+                                                    <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
+                                                        <strong style="color: #92400e;">Tokens restantes:</strong> 
+                                                        <span style="color: #333;">{nuevos_tokens:,} tokens</span>
+                                                    </li>
+                                                    <li style="margin-bottom: 0;">
+                                                        <strong style="color: #92400e;">Porcentaje usado:</strong> 
+                                                        <span style="color: #d97706; font-weight: bold; font-size: 18px;">{usage_percent:.1f}%</span>
+                                                    </li>
+                                                </ul>
+                                            </div>
+                                            
+                                            <p style="font-size: 14px; color: #666; margin-top: 20px;">
+                                                <strong>Nota:</strong> El usuario recibirá un aviso suave. Si alcanza el 90%, será elegible para un descuento del 20%.
+                                            </p>
+                                            
+                                            <p style="font-size: 12px; color: #666; margin-top: 20px; text-align: center;">
+                                                Fecha: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC
+                                            </p>
+                                        </div>
+                                    </body>
+                                    </html>
+                                    """
+                                    send_admin_email("⚠️ Alerta: Usuario alcanzó 80% de límite de tokens", admin_html)
+                                except Exception as e:
+                                    print(f"[BG] ⚠️ Error al enviar email al admin por 80% de uso: {e}")
+                            
+                            admin_thread = threading.Thread(target=send_admin_80_percent_email, daemon=True)
+                            admin_thread.start()
+                        except Exception as e:
+                            print(f"[BG] ⚠️ Error al preparar email al admin por 80% de uso: {e}")
+                    
+                    if usage_percent >= 90 and not profile.get("fair_use_discount_eligible", False):
+                        update_data["fair_use_discount_eligible"] = True
+                        update_data["fair_use_discount_eligible_at"] = datetime.utcnow().isoformat()
+                        print(f"[BG] Usuario {user_id} alcanzó 90% de uso ({usage_percent:.1f}%) - Elegible para descuento del 20%")
+                        
+                        if not profile.get("fair_use_email_sent", False):
+                            try:
+                                user_email_response = supabase_client.table("profiles").select("email").eq("id", user_id).execute()
+                                user_email = user_email_response.data[0].get("email") if user_email_response.data else None
+                                
+                                if user_email:
+                                    plan_name = "tu plan actual"
+                                    current_plan_code_for_email = profile_fair_use.data[0].get("current_plan") if profile_fair_use.data else None
+                                    if current_plan_code_for_email:
+                                        from plans import get_plan_by_code
+                                        plan_info = get_plan_by_code(current_plan_code_for_email)
+                                        if plan_info:
+                                            plan_name = plan_info.name
+                                    
+                                    plan_code_for_thread = current_plan_code_for_email
+                                    plan_name_for_thread = plan_name
+                                    
+                                    def send_90_percent_email_background():
+                                        try:
+                                            from lib.email import send_email
+                                            from plans import get_plan_by_code, CODEX_PLANS
+                                            
+                                            frontend_url = os.getenv("FRONTEND_URL", "https://www.codextrader.tech").strip('"').strip("'").strip()
+                                            planes_url = f"{frontend_url.rstrip('/')}/planes"
+                                            
+                                            suggested_plan_code = "trader"
+                                            if plan_code_for_thread:
+                                                current_plan_index = next((i for i, p in enumerate(CODEX_PLANS) if p.code == plan_code_for_thread), -1)
+                                                if current_plan_index >= 0 and current_plan_index < len(CODEX_PLANS) - 1:
+                                                    suggested_plan_code = CODEX_PLANS[current_plan_index + 1].code
+                                            
+                                            suggested_plan = get_plan_by_code(suggested_plan_code)
+                                            
+                                            email_html = f"""
+                                            <html>
+                                            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+                                                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 12px;">
+                                                    <h1 style="color: white; margin: 0;">🚨 Alerta de Uso</h1>
+                                                </div>
+                                                <div style="background: white; padding: 30px; border-radius: 8px; margin-top: 20px;">
+                                                    <p>Has alcanzado el <strong>90% de tu límite</strong> en tu plan <strong>{plan_name_for_thread}</strong>.</p>
+                                                    <div style="background: #f0fdf4; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                                                        <p><strong>📊 Tu uso actual:</strong></p>
+                                                        <p>Tokens restantes: <strong>{nuevos_tokens:,}</strong> de <strong>{tokens_monthly_limit:,}</strong></p>
+                                                        <p>Porcentaje usado: <strong>{usage_percent:.1f}%</strong></p>
+                                                    </div>
+                                                    <div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; padding: 25px; border-radius: 10px; text-align: center; margin: 25px 0;">
+                                                        <h2 style="margin: 0 0 10px 0;">🎁 ¡Descuento Especial del 20%!</h2>
+                                                        <p>Te ofrecemos un <strong>20% de descuento</strong> para actualizar tu plan.</p>
+                                                        <div style="background: white; color: #f5576c; padding: 15px 30px; border-radius: 8px; font-size: 24px; font-weight: bold; margin: 15px 0; display: inline-block;">CUPON20</div>
+                                                    </div>
+                                                    <div style="text-align: center; margin: 30px 0;">
+                                                        <a href="{planes_url}" style="display: inline-block; background: #667eea; color: white; padding: 15px 40px; text-decoration: none; border-radius: 8px; font-weight: bold;">Ver Planes y Aprovechar Descuento</a>
+                                                    </div>
+                                                </div>
+                                            </body>
+                                            </html>
+                                            """
+                                            
+                                            send_email(
+                                                to=user_email,
+                                                subject="🚨 Has alcanzado el 90% de tu límite - Descuento del 20% disponible",
+                                                html=email_html
+                                            )
+                                            
+                                            supabase_client.table("profiles").update({
+                                                "fair_use_email_sent": True
+                                            }).eq("id", user_id).execute()
+                                            
+                                            print(f"[BG] ✅ Email de alerta al 90% enviado a {user_email}")
+                                            
+                                            try:
+                                                from lib.email import send_admin_email
+                                                
+                                                admin_html_90 = f"""
+                                                <html>
+                                                <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+                                                    <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 20px; text-align: center; border-radius: 10px 10px 0 0;">
+                                                        <h2 style="color: white; margin: 0; font-size: 24px;">🚨 ALERTA CRÍTICA: Usuario alcanzó 90% de límite</h2>
+                                                    </div>
+                                                    
+                                                    <div style="background: #ffffff; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                                                        <p>Un usuario ha alcanzado el <strong>90% de su límite mensual de tokens</strong>.</p>
+                                                        <div style="background: #fee2e2; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                                                            <p><strong>Email:</strong> {user_email}</p>
+                                                            <p><strong>ID:</strong> {user_id}</p>
+                                                            <p><strong>Plan:</strong> {plan_name_for_thread}</p>
+                                                            <p><strong>Uso:</strong> {usage_percent:.1f}%</p>
+                                                        </div>
+                                                    </div>
+                                                </body>
+                                                </html>
+                                                """
+                                                send_admin_email("🚨 ALERTA CRÍTICA: Usuario alcanzó 90% de límite de tokens", admin_html_90)
+                                                print(f"[BG] ✅ Email al admin enviado por 90% de uso de usuario {user_id}")
+                                            except Exception as admin_error:
+                                                print(f"[BG] ⚠️ Error al enviar email al admin por 90% de uso: {admin_error}")
+                                        except Exception as e:
+                                            print(f"[BG] ⚠️ Error al enviar email de alerta al 90%: {e}")
+                                    
+                                    email_thread = threading.Thread(target=send_90_percent_email_background, daemon=True)
+                                    email_thread.start()
+                            except Exception as e:
+                                print(f"[BG] ⚠️ Error al preparar envío de email al 90%: {e}")
+        except Exception as e:
+            error_str = str(e)
+            if "42703" in error_str or "PGRST205" in error_str or "does not exist" in error_str.lower():
+                pass
+            else:
+                logger.warning(f"[BG] Columnas de uso justo no disponibles: {e}")
+        
+        try:
+            supabase_client.table("profiles").update(update_data).eq("id", user_id).execute()
+            print(f"[BG] Tokens descontados: {tokens_usados}")
+            print(f"[BG] Tokens restantes después: {nuevos_tokens}")
+        except Exception as e:
+            print(f"[BG] ERROR al actualizar tokens: {e}")
+        
+        user_query = query_payload.get("query") or ""
+        
+        try:
+            if not conversation_id:
+                session_response = supabase_client.table("chat_sessions").insert({
+                    "user_id": user_id,
+                    "title": user_query[:50] if len(user_query) > 50 else user_query
+                }).execute()
+                
+                if session_response.data and len(session_response.data) > 0:
+                    conversation_id = session_response.data[0]["id"]
+                    print(f"[BG] Nueva sesión de chat creada: {conversation_id}")
+                else:
+                    print(f"[BG] [WARN] No se pudo crear sesión de chat, continuando sin guardar historial")
+            else:
+                try:
+                    session_check = supabase_client.table("chat_sessions").select("id").eq("id", conversation_id).eq("user_id", user_id).execute()
+                    if not session_check.data:
+                        print(f"[BG] [WARN] Sesión {conversation_id} no encontrada o no pertenece al usuario, creando nueva sesión")
+                        session_response = supabase_client.table("chat_sessions").insert({
+                            "user_id": user_id,
+                            "title": user_query[:50] if len(user_query) > 50 else user_query
+                        }).execute()
+                        if session_response.data and len(session_response.data) > 0:
+                            conversation_id = session_response.data[0]["id"]
+                except Exception as e:
+                    print(f"[BG] [WARN] Error verificando sesión: {e}, creando nueva sesión")
+                    session_response = supabase_client.table("chat_sessions").insert({
+                        "user_id": user_id,
+                        "title": user_query[:50] if len(user_query) > 50 else user_query
+                    }).execute()
+                    if session_response.data and len(session_response.data) > 0:
+                        conversation_id = session_response.data[0]["id"]
+        except Exception as e:
+            print(f"[BG] [WARN] No se pudo guardar historial (puede que la tabla no exista aún): {str(e)}")
+            import traceback
+            traceback.print_exc()
+        
+        if conversation_id:
+            try:
+                supabase_client.table("conversations").insert({
+                    "user_id": user_id,
+                    "conversation_id": conversation_id,
+                    "message_role": "user",
+                    "message_content": user_query,
+                    "tokens_used": 0
+                }).execute()
+                
+                supabase_client.table("conversations").insert({
+                    "user_id": user_id,
+                    "conversation_id": conversation_id,
+                    "message_role": "assistant",
+                    "message_content": respuesta_texto,
+                    "tokens_used": tokens_usados
+                }).execute()
+                
+                supabase_client.table("chat_sessions").update({
+                    "updated_at": "now()"
+                }).eq("id", conversation_id).execute()
+            except Exception as e:
+                print(f"[BG] [WARN] No se pudo guardar historial (puede que la tabla no exista aún): {str(e)}")
+                import traceback
+                traceback.print_exc()
+    except Exception as bg_error:
+        logger.error(f"[BG] Error inesperado en tarea de guardado: {bg_error}", exc_info=True)
+
 @chat_router.post("/chat")
 @chat_router.post("/chat-simple")
-async def chat(query_input: QueryInput, user = Depends(get_user)):
+async def chat(query_input: QueryInput, background_tasks: BackgroundTasks, user = Depends(get_user)):
     """
     Endpoint para hacer consultas sobre los documentos indexados.
     
@@ -683,477 +1051,130 @@ Responde siempre en español."""
             # Log para debugging (solo mostrar primeros caracteres de la query)
             logger.info(f"📤 Enviando consulta a {chat_model} (query: {query_input.query[:50]}...)")
             
-            try:
-                response = litellm.completion(**litellm_params)
-                logger.info(f"✓ Respuesta recibida de {chat_model}")
-            except Exception as e:
-                logger.error(f"❌ Error en llamada a LiteLLM: {str(e)}")
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Error al generar respuesta con LiteLLM: {str(e)}"
-                )
-            
-            # Obtener la respuesta y los tokens usados
-            if not response or not response.choices or len(response.choices) == 0:
-                logger.error("❌ Respuesta de LiteLLM vacía o sin choices")
-                respuesta_texto = "Lo siento, hubo un error al generar la respuesta. Por favor, intenta nuevamente."
-            else:
-                respuesta_texto = response.choices[0].message.content
-                if not respuesta_texto or respuesta_texto.strip() == "":
-                    logger.warning("⚠️ Respuesta de LiteLLM está vacía")
-                    respuesta_texto = "Lo siento, no pude generar una respuesta. Por favor, intenta reformular tu pregunta."
-                else:
-                    logger.info(f"✅ Respuesta generada: {len(respuesta_texto)} caracteres")
-                    
-                    # Añadir la lista de fuentes al final de la respuesta si es modo "Estudio Profundo"
-                    is_deep_mode = query_input.response_mode and (
-                        query_input.response_mode.lower() == 'deep' or 
-                        query_input.response_mode.lower() == 'estudio profundo' or
-                        query_input.response_mode.lower() == 'profundo'
-                    )
-                    
-                    if is_deep_mode and citation_list:
-                        respuesta_texto += "\n\n---\n**FUENTES DETALLADAS**:\n" + citation_list
-                        logger.info(f"📚 Lista de fuentes añadida a la respuesta: {len(citation_list)} caracteres")
-            
-            # Extraer información detallada de uso de tokens de LiteLLM
-            usage = response.usage if hasattr(response, 'usage') else None
-            
-            # Inicializar variables de tokens
-            input_tokens = 0
-            output_tokens = 0
-            total_tokens_usados = 0
-            
-            if usage:
-                # LiteLLM puede devolver usage como objeto o dict
-                if isinstance(usage, dict):
-                    # Si es un diccionario
-                    input_tokens = usage.get('prompt_tokens', usage.get('input_tokens', 0))
-                    output_tokens = usage.get('completion_tokens', usage.get('output_tokens', 0))
-                    total_tokens_usados = usage.get('total_tokens', 0)
-                else:
-                    # Si es un objeto
-                    if hasattr(usage, 'prompt_tokens'):
-                        input_tokens = usage.prompt_tokens
-                    elif hasattr(usage, 'input_tokens'):
-                        input_tokens = usage.input_tokens
-                    
-                    if hasattr(usage, 'completion_tokens'):
-                        output_tokens = usage.completion_tokens
-                    elif hasattr(usage, 'output_tokens'):
-                        output_tokens = usage.output_tokens
-                    
-                    if hasattr(usage, 'total_tokens'):
-                        total_tokens_usados = usage.total_tokens
-                
-                # Si total_tokens_usados es 0 pero tenemos input y output, calcularlo
-                if total_tokens_usados == 0 and (input_tokens > 0 or output_tokens > 0):
-                    total_tokens_usados = input_tokens + output_tokens
-            
-            # Si no se pudieron obtener los tokens, usar un estimado basado en la longitud
-            if total_tokens_usados == 0:
-                # Estimación aproximada: 1 token ≈ 4 caracteres
-                input_tokens = len(prompt) // 4
-                output_tokens = len(respuesta_texto) // 4
-                total_tokens_usados = max(100, input_tokens + output_tokens)
-                print(f"⚠ No se pudo obtener usage de LiteLLM, usando estimación")
-            
-            # IMPORTANTE: Registrar uso del modelo para monitoreo de costos
-            # Esta llamada es no-bloqueante y no afecta el flujo principal si falla
-            try:
-                from lib.model_usage import log_model_usage_from_response
-                log_model_usage_from_response(
-                    user_id=str(user_id),
-                    model=chat_model,
-                    tokens_input=input_tokens,
-                    tokens_output=output_tokens
-                )
-            except Exception as e:
-                # No es crítico si falla el logging, solo registrar el error
-                print(f"WARNING: Error al registrar uso de modelo (no critico): {e}")
-            
-            # Loggear información detallada de tokens y costos
-            print("=" * 60)
-            print(f"[INFO] Consulta procesada:")
-            print(f"  Modelo: {chat_model}")
-            print(f"  Input tokens: {input_tokens}")
-            print(f"  Output tokens: {output_tokens}")
-            print(f"  Total tokens: {total_tokens_usados}")
-            print(f"  Tokens restantes antes: {tokens_restantes}")
-            print("=" * 60)
-            
-            # Usar total_tokens_usados para el descuento (mantener compatibilidad)
-            tokens_usados = total_tokens_usados
-            
-            # Paso B: Calcular nuevos tokens antes de guardar el log
-            nuevos_tokens = tokens_restantes - tokens_usados
-        
-            # Guardar log de tokens en archivo para consulta posterior
-            try:
-                log_entry = {
-                    "timestamp": datetime.now().isoformat(),
-                    "user_id": str(user_id),
-                    "model": chat_model,
-                    "query_preview": query_input.query[:50] + "..." if len(query_input.query) > 50 else query_input.query,
-                    "response_mode": response_mode,
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": total_tokens_usados,
-                    "tokens_antes": tokens_restantes,
-                    "tokens_despues": nuevos_tokens
-                }
-                
-                # Guardar en archivo JSON (append)
-                log_file = "tokens_log.json"
-                log_data = []
-                
-                # Leer logs existentes si el archivo existe
-                if os.path.exists(log_file):
-                    try:
-                        with open(log_file, 'r', encoding='utf-8') as f:
-                            log_data = json.load(f)
-                    except:
-                        log_data = []
-                
-                # Agregar nuevo log (mantener solo los últimos 100)
-                log_data.append(log_entry)
-                if len(log_data) > 100:
-                    log_data = log_data[-100:]
-                
-                # Guardar
-                with open(log_file, 'w', encoding='utf-8') as f:
-                    json.dump(log_data, f, indent=2, ensure_ascii=False)
-            except Exception as e:
-                # Si falla el logging, no es crítico, solo imprimir error
-                print(f"⚠ No se pudo guardar log de tokens: {e}")
-            
-            # Paso C: Descontar tokens de la base de datos y verificar uso justo
-        
-            # IMPORTANTE: Lógica de uso justo (Fair Use)
-            # Obtener información del perfil para calcular porcentaje de uso
-            # Manejar el caso cuando las columnas no existen (compatibilidad con esquemas antiguos)
-            update_data = {
-                "tokens_restantes": nuevos_tokens
-            }
-            
-            try:
-                profile_fair_use = supabase_client.table("profiles").select(
-                    "tokens_monthly_limit, fair_use_warning_shown, fair_use_discount_eligible, fair_use_discount_used"
-                ).eq("id", user_id).execute()
-                
-                if profile_fair_use.data:
-                    profile = profile_fair_use.data[0]
-                    tokens_monthly_limit = profile.get("tokens_monthly_limit") or 0
-                    
-                    if tokens_monthly_limit > 0:
-                        # Calcular porcentaje de uso
-                        tokens_usados_total = tokens_monthly_limit - nuevos_tokens
-                        usage_percent = (tokens_usados_total / tokens_monthly_limit) * 100
-                        
-                        # Aviso suave al 80% de uso
-                        if usage_percent >= 80 and not profile.get("fair_use_warning_shown", False):
-                            update_data["fair_use_warning_shown"] = True
-                            print(f"WARNING: Usuario {user_id} alcanzo 80% de uso ({usage_percent:.1f}%)")
-                            
-                            # Enviar email al admin cuando se alcanza el 80%
-                            try:
-                                from lib.email import send_admin_email
-                                
-                                # Obtener email del usuario
-                                user_email_response = supabase_client.table("profiles").select("email, current_plan").eq("id", user_id).execute()
-                                user_email = user_email_response.data[0].get("email") if user_email_response.data else None
-                                current_plan = user_email_response.data[0].get("current_plan", "N/A") if user_email_response.data else "N/A"
-                                
-                                def send_admin_80_percent_email():
-                                    try:
-                                        admin_html = f"""
-                                        <html>
-                                        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-                                            <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 20px; text-align: center; border-radius: 10px 10px 0 0;">
-                                                <h2 style="color: white; margin: 0; font-size: 24px;">⚠️ Alerta: Usuario alcanzó 80% de límite</h2>
-                                            </div>
-                                            
-                                            <div style="background: #ffffff; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                                                <p style="font-size: 16px; margin-bottom: 20px;">
-                                                    Un usuario ha alcanzado el <strong>80% de su límite mensual de tokens</strong>.
-                                                </p>
-                                                
-                                                <div style="background: #fef3c7; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">
-                                                    <ul style="list-style: none; padding: 0; margin: 0;">
-                                                        <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
-                                                            <strong style="color: #92400e;">Email del usuario:</strong> 
-                                                            <span style="color: #333;">{user_email or 'N/A'}</span>
-                                                        </li>
-                                                        <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
-                                                            <strong style="color: #92400e;">ID de usuario:</strong> 
-                                                            <span style="color: #333; font-family: monospace; font-size: 12px;">{user_id}</span>
-                                                        </li>
-                                                        <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
-                                                            <strong style="color: #92400e;">Plan actual:</strong> 
-                                                            <span style="color: #333;">{current_plan}</span>
-                                                        </li>
-                                                        <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
-                                                            <strong style="color: #92400e;">Límite mensual:</strong> 
-                                                            <span style="color: #333;">{tokens_monthly_limit:,} tokens</span>
-                                                        </li>
-                                                        <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
-                                                            <strong style="color: #92400e;">Tokens restantes:</strong> 
-                                                            <span style="color: #333;">{nuevos_tokens:,} tokens</span>
-                                                        </li>
-                                                        <li style="margin-bottom: 0;">
-                                                            <strong style="color: #92400e;">Porcentaje usado:</strong> 
-                                                            <span style="color: #d97706; font-weight: bold; font-size: 18px;">{usage_percent:.1f}%</span>
-                                                        </li>
-                                                    </ul>
-                                                </div>
-                                                
-                                                <p style="font-size: 14px; color: #666; margin-top: 20px;">
-                                                    <strong>Nota:</strong> El usuario recibirá un aviso suave. Si alcanza el 90%, será elegible para un descuento del 20%.
-                                                </p>
-                                                
-                                                <p style="font-size: 12px; color: #666; margin-top: 20px; text-align: center;">
-                                                    Fecha: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC
-                                                </p>
-                                            </div>
-                                        </body>
-                                        </html>
-                                        """
-                                        send_admin_email("⚠️ Alerta: Usuario alcanzó 80% de límite de tokens", admin_html)
-                                    except Exception as e:
-                                        print(f"⚠️ Error al enviar email al admin por 80% de uso: {e}")
-                                
-                                admin_thread = threading.Thread(target=send_admin_80_percent_email, daemon=True)
-                                admin_thread.start()
-                            except Exception as e:
-                                print(f"⚠️ Error al preparar email al admin por 80% de uso: {e}")
-                        
-                        # Elegibilidad para descuento al 90% de uso
-                        if usage_percent >= 90 and not profile.get("fair_use_discount_eligible", False):
-                            update_data["fair_use_discount_eligible"] = True
-                            update_data["fair_use_discount_eligible_at"] = datetime.utcnow().isoformat()
-                            print(f"🔔 Usuario {user_id} alcanzó 90% de uso ({usage_percent:.1f}%) - Elegible para descuento del 20%")
-                            
-                            # Enviar email de alerta al 90% (solo una vez)
-                            if not profile.get("fair_use_email_sent", False):
-                                try:
-                                    # Obtener email del usuario
-                                    user_email_response = supabase_client.table("profiles").select("email").eq("id", user_id).execute()
-                                    user_email = user_email_response.data[0].get("email") if user_email_response.data else None
-                                    
-                                    if user_email:
-                                        # Obtener información del plan
-                                        plan_name = "tu plan actual"
-                                        current_plan_code_for_email = None
-                                        if profile_fair_use.data:
-                                            current_plan_code_for_email = profile_fair_use.data[0].get("current_plan")
-                                            if current_plan_code_for_email:
-                                                from plans import get_plan_by_code
-                                                plan_info = get_plan_by_code(current_plan_code_for_email)
-                                                if plan_info:
-                                                    plan_name = plan_info.name
-                                        
-                                        # Guardar variables para usar en el thread
-                                        plan_code_for_thread = current_plan_code_for_email
-                                        plan_name_for_thread = plan_name
-                                        
-                                        # Enviar email en background (no bloquea)
-                                        def send_90_percent_email_background():
-                                            try:
-                                                from lib.email import send_email
-                                                from plans import get_plan_by_code, CODEX_PLANS
-                                                
-                                                # Construir URL de planes antes del f-string
-                                                frontend_url = os.getenv("FRONTEND_URL", "https://www.codextrader.tech").strip('"').strip("'").strip()
-                                                planes_url = f"{frontend_url.rstrip('/')}/planes"
-                                                
-                                                # Determinar plan sugerido
-                                                suggested_plan_code = "trader"
-                                                if plan_code_for_thread:
-                                                    current_plan_index = next((i for i, p in enumerate(CODEX_PLANS) if p.code == plan_code_for_thread), -1)
-                                                    if current_plan_index >= 0 and current_plan_index < len(CODEX_PLANS) - 1:
-                                                        suggested_plan_code = CODEX_PLANS[current_plan_index + 1].code
-                                                
-                                                suggested_plan = get_plan_by_code(suggested_plan_code)
-                                                suggested_plan_name = suggested_plan.name if suggested_plan else "Trader"
-                                                
-                                                # Template de email atractivo (simplificado para ahorrar espacio)
-                                                email_html = f"""
-                                                <html>
-                                                <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-                                                    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 12px;">
-                                                        <h1 style="color: white; margin: 0;">🚨 Alerta de Uso</h1>
-                                                    </div>
-                                                    <div style="background: white; padding: 30px; border-radius: 8px; margin-top: 20px;">
-                                                        <p>Has alcanzado el <strong>90% de tu límite</strong> en tu plan <strong>{plan_name_for_thread}</strong>.</p>
-                                                        <div style="background: #f0fdf4; padding: 20px; border-radius: 8px; margin: 20px 0;">
-                                                            <p><strong>📊 Tu uso actual:</strong></p>
-                                                            <p>Tokens restantes: <strong>{nuevos_tokens:,}</strong> de <strong>{tokens_monthly_limit:,}</strong></p>
-                                                            <p>Porcentaje usado: <strong>{usage_percent:.1f}%</strong></p>
-                                                        </div>
-                                                        <div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; padding: 25px; border-radius: 10px; text-align: center; margin: 25px 0;">
-                                                            <h2 style="margin: 0 0 10px 0;">🎁 ¡Descuento Especial del 20%!</h2>
-                                                            <p>Te ofrecemos un <strong>20% de descuento</strong> para actualizar tu plan.</p>
-                                                            <div style="background: white; color: #f5576c; padding: 15px 30px; border-radius: 8px; font-size: 24px; font-weight: bold; margin: 15px 0; display: inline-block;">CUPON20</div>
-                                                        </div>
-                                                        <div style="text-align: center; margin: 30px 0;">
-                                                            <a href="{planes_url}" style="display: inline-block; background: #667eea; color: white; padding: 15px 40px; text-decoration: none; border-radius: 8px; font-weight: bold;">Ver Planes y Aprovechar Descuento</a>
-                                                        </div>
-                                                    </div>
-                                                </body>
-                                                </html>
-                                                """
-                                                
-                                                send_email(
-                                                    to=user_email,
-                                                    subject=f"🚨 Has alcanzado el 90% de tu límite - Descuento del 20% disponible",
-                                                    html=email_html
-                                                )
-                                                
-                                                # Marcar que el email fue enviado
-                                                supabase_client.table("profiles").update({
-                                                    "fair_use_email_sent": True
-                                                }).eq("id", user_id).execute()
-                                                
-                                                print(f"✅ Email de alerta al 90% enviado a {user_email}")
-                                                
-                                                # IMPORTANTE: También enviar email al admin cuando se alcanza el 90%
-                                                try:
-                                                    from lib.email import send_admin_email
-                                                    
-                                                    admin_html_90 = f"""
-                                                    <html>
-                                                    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-                                                        <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 20px; text-align: center; border-radius: 10px 10px 0 0;">
-                                                            <h2 style="color: white; margin: 0; font-size: 24px;">🚨 ALERTA CRÍTICA: Usuario alcanzó 90% de límite</h2>
-                                                        </div>
-                                                        
-                                                        <div style="background: #ffffff; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                                                            <p>Un usuario ha alcanzado el <strong>90% de su límite mensual de tokens</strong>.</p>
-                                                            <div style="background: #fee2e2; padding: 20px; border-radius: 8px; margin: 20px 0;">
-                                                                <p><strong>Email:</strong> {user_email}</p>
-                                                                <p><strong>ID:</strong> {user_id}</p>
-                                                                <p><strong>Plan:</strong> {plan_name_for_thread}</p>
-                                                                <p><strong>Uso:</strong> {usage_percent:.1f}%</p>
-                                                            </div>
-                                                        </div>
-                                                    </body>
-                                                    </html>
-                                                    """
-                                                    send_admin_email("🚨 ALERTA CRÍTICA: Usuario alcanzó 90% de límite de tokens", admin_html_90)
-                                                    print(f"✅ Email de alerta al admin enviado por 90% de uso de usuario {user_id}")
-                                                except Exception as admin_error:
-                                                    print(f"⚠️ Error al enviar email al admin por 90% de uso: {admin_error}")
-                                            except Exception as e:
-                                                print(f"⚠️ Error al enviar email de alerta al 90%: {e}")
-                                        
-                                        email_thread = threading.Thread(target=send_90_percent_email_background, daemon=True)
-                                        email_thread.start()
-                                except Exception as e:
-                                    print(f"⚠️ Error al preparar envío de email al 90%: {e}")
-            except Exception as e:
-                # Si las columnas no existen, continuar sin la lógica de uso justo
-                # Verificar si es un error de columna no existente (código 42703) o tabla no encontrada (PGRST205)
-                error_str = str(e)
-                if "42703" in error_str or "PGRST205" in error_str or "does not exist" in error_str.lower():
-                    # Solo mostrar warning en modo debug, no en producción
-                    pass
-                else:
-                    # Para otros errores, mostrar el warning
-                    logger.warning(f"Columnas de uso justo no disponibles (puede que no estén creadas): {e}")
-                # Continuar sin actualizar campos de uso justo
-            
-            try:
-                supabase_client.table("profiles").update(update_data).eq("id", user_id).execute()
-                print(f"[INFO] Tokens descontados: {tokens_usados} tokens")
-                print(f"[INFO] Tokens restantes después: {nuevos_tokens} tokens")
-            except Exception as e:
-                # Si falla la actualización, aún devolvemos la respuesta pero registramos el error
-                print(f"ERROR: Error al actualizar tokens: {str(e)}")
-            
-            # Paso C: Crear o usar sesión de chat y guardar mensajes
-            # conversation_id ya está inicializado al inicio de la función
-            try:
-                # Si no hay conversation_id, crear una nueva sesión
-                if not conversation_id:
-                    # Crear nueva sesión de chat
+            litellm_params["stream"] = True
+
+            if not conversation_id:
+                try:
                     session_response = supabase_client.table("chat_sessions").insert({
                         "user_id": user_id,
                         "title": query_input.query[:50] if len(query_input.query) > 50 else query_input.query
                     }).execute()
-                    
                     if session_response.data and len(session_response.data) > 0:
                         conversation_id = session_response.data[0]["id"]
-                        print(f"[INFO] Nueva sesión de chat creada: {conversation_id}")
-                    else:
-                        print(f"[WARN] No se pudo crear sesión de chat, continuando sin guardar historial")
-                else:
-                    # Si hay conversation_id, verificar que existe y pertenece al usuario
-                    try:
-                        session_check = supabase_client.table("chat_sessions").select("id").eq("id", conversation_id).eq("user_id", user_id).execute()
-                        if not session_check.data:
-                            # La sesión no existe o no pertenece al usuario, crear una nueva
-                            print(f"[WARN] Sesión {conversation_id} no encontrada o no pertenece al usuario, creando nueva sesión")
-                            session_response = supabase_client.table("chat_sessions").insert({
-                                "user_id": user_id,
-                                "title": query_input.query[:50] if len(query_input.query) > 50 else query_input.query
-                            }).execute()
-                            if session_response.data and len(session_response.data) > 0:
-                                conversation_id = session_response.data[0]["id"]
-                    except Exception as e:
-                        print(f"[WARN] Error verificando sesión: {e}, creando nueva sesión")
-                        session_response = supabase_client.table("chat_sessions").insert({
-                            "user_id": user_id,
-                            "title": query_input.query[:50] if len(query_input.query) > 50 else query_input.query
-                        }).execute()
-                        if session_response.data and len(session_response.data) > 0:
-                            conversation_id = session_response.data[0]["id"]
-            except Exception as e:
-                # Si la tabla no existe o hay error, continuar sin guardar historial
-                print(f"[WARN] No se pudo guardar historial (puede que la tabla no exista aún): {str(e)}")
-                import traceback
-                traceback.print_exc()
-            
-            # Guardar mensajes si tenemos conversation_id
-            if conversation_id:
+                        logger.info(f"[INFO] Nueva sesión de chat creada antes del streaming: {conversation_id}")
+                except Exception as session_error:
+                    logger.warning(f"[WARN] No se pudo crear sesión antes del streaming: {session_error}")
+
+            response_mode = query_input.response_mode or 'fast'
+            query_payload = query_input.dict()
+            stream_state = {
+                "full_response": "",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "prompt_text": prompt,
+                "error": None,
+                "conversation_id": conversation_id
+            }
+
+            def assign_usage_values(usage_obj):
+                if not usage_obj:
+                    return
                 try:
-                    # Guardar mensaje del usuario
-                    supabase_client.table("conversations").insert({
-                        "user_id": user_id,
-                        "conversation_id": conversation_id,
-                        "message_role": "user",
-                        "message_content": query_input.query,
-                        "tokens_used": 0
-                    }).execute()
-                    
-                    # Guardar respuesta del asistente
-                    supabase_client.table("conversations").insert({
-                        "user_id": user_id,
-                        "conversation_id": conversation_id,
-                        "message_role": "assistant",
-                        "message_content": respuesta_texto,
-                        "tokens_used": tokens_usados
-                    }).execute()
-                    
-                    # Actualizar updated_at de la sesión (se hace automáticamente con el trigger, pero lo hacemos explícitamente también)
-                    supabase_client.table("chat_sessions").update({
-                        "updated_at": "now()"
-                    }).eq("id", conversation_id).execute()
-                except Exception as e:
-                    # Si la tabla no existe o hay error, continuar sin guardar historial
-                    print(f"[WARN] No se pudo guardar historial (puede que la tabla no exista aún): {str(e)}")
-                    import traceback
-                    traceback.print_exc()
-            
-                # Devolver la respuesta inmediatamente después de procesar exitosamente LiteLLM
-                # Esto evita que el bloque else del fallback sobrescriba la respuesta
-                logger.info(f"📤 Devolviendo respuesta exitosa: {len(respuesta_texto) if respuesta_texto else 0} caracteres, tokens_usados={tokens_usados}, conversation_id={conversation_id}")
-                # NOTA: El return aquí termina la función, evitando que el else se ejecute
-                return {
-                    "response": respuesta_texto,
-                    "tokens_usados": tokens_usados,
-                    "tokens_restantes": nuevos_tokens,
-                    "conversation_id": conversation_id
-                }
+                    if isinstance(usage_obj, dict):
+                        prompt_tokens = usage_obj.get("prompt_tokens", usage_obj.get("input_tokens", 0)) or 0
+                        completion_tokens = usage_obj.get("completion_tokens", usage_obj.get("output_tokens", 0)) or 0
+                        total_tokens_local = usage_obj.get("total_tokens", 0) or (prompt_tokens + completion_tokens)
+                    else:
+                        prompt_tokens = getattr(usage_obj, "prompt_tokens", getattr(usage_obj, "input_tokens", 0)) or 0
+                        completion_tokens = getattr(usage_obj, "completion_tokens", getattr(usage_obj, "output_tokens", 0)) or 0
+                        total_tokens_local = getattr(usage_obj, "total_tokens", 0) or (prompt_tokens + completion_tokens)
+                    if prompt_tokens:
+                        stream_state["input_tokens"] = prompt_tokens
+                    if completion_tokens:
+                        stream_state["output_tokens"] = completion_tokens
+                    if total_tokens_local:
+                        stream_state["total_tokens"] = total_tokens_local
+                except Exception as usage_error:
+                    logger.debug(f"[STREAM] No se pudo asignar usage del chunk: {usage_error}")
+
+            def extract_delta_text(chunk_obj):
+                try:
+                    choices = getattr(chunk_obj, "choices", None)
+                    if choices is None and isinstance(chunk_obj, dict):
+                        choices = chunk_obj.get("choices")
+                    if not choices:
+                        return ""
+                    choice = choices[0]
+                    delta = getattr(choice, "delta", None)
+                    if delta is None and isinstance(choice, dict):
+                        delta = choice.get("delta") or choice.get("message")
+                    content = None
+                    if delta is not None:
+                        if isinstance(delta, dict):
+                            content = delta.get("content")
+                        else:
+                            content = getattr(delta, "content", None)
+                    if content is None and isinstance(choice, dict):
+                        content = choice.get("text")
+                    elif content is None:
+                        content = getattr(choice, "text", None)
+                    if isinstance(content, list):
+                        content = "".join([c for c in content if isinstance(c, str)])
+                    return content or ""
+                except Exception as parse_error:
+                    logger.debug(f"[STREAM] Error al extraer delta: {parse_error}")
+                    return ""
+
+            async def stream_generator():
+                response_stream = None
+                try:
+                    response_stream = litellm.completion(**litellm_params)
+                    for chunk in response_stream:
+                        usage_chunk = getattr(chunk, "usage", None)
+                        if usage_chunk:
+                            assign_usage_values(usage_chunk)
+                        delta_text = extract_delta_text(chunk)
+                        if delta_text:
+                            stream_state["full_response"] += delta_text
+                            yield delta_text
+                    final_response = getattr(response_stream, "final_response", None)
+                    if final_response:
+                        assign_usage_values(getattr(final_response, "usage", None))
+                    if citation_list and (query_input.response_mode or "").lower() in ("deep", "estudio profundo", "profundo"):
+                        fuentes_chunk = "\n\n---\n**FUENTES DETALLADAS**:\n" + citation_list
+                        stream_state["full_response"] += fuentes_chunk
+                        yield fuentes_chunk
+                except Exception as stream_error:
+                    logger.error(f"❌ Error durante streaming: {stream_error}")
+                    stream_state["error"] = str(stream_error)
+                    fallback_chunk = "\n[Error] Ocurrió un problema al generar la respuesta. Por favor, intenta nuevamente."
+                    stream_state["full_response"] += fallback_chunk
+                    yield fallback_chunk
+                finally:
+                    if stream_state.get("total_tokens", 0) == 0 and stream_state["full_response"]:
+                        approx_input = len(stream_state.get("prompt_text") or prompt) // 4
+                        approx_output = len(stream_state["full_response"]) // 4
+                        stream_state["input_tokens"] = stream_state.get("input_tokens") or approx_input
+                        stream_state["output_tokens"] = stream_state.get("output_tokens") or approx_output
+                        stream_state["total_tokens"] = stream_state["input_tokens"] + stream_state["output_tokens"]
+
+            background_tasks.add_task(
+                persist_chat_background_task,
+                str(user_id),
+                query_payload,
+                stream_state,
+                tokens_restantes,
+                chat_model,
+                response_mode,
+                conversation_id
+            )
+
+            headers = {}
+            if conversation_id:
+                headers["X-Conversation-Id"] = str(conversation_id)
+
+            return StreamingResponse(stream_generator(), media_type="text/plain", headers=headers)
         else:
             # Si no hay chunks recuperados y no es saludo, usar un prompt genérico
             logger.warning("⚠️ No se encontraron chunks en RAG. Respondiendo sin contexto específico.")
