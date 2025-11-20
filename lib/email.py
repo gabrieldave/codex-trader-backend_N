@@ -4,6 +4,8 @@ Proporciona funciones para enviar emails genéricos y notificaciones al administ
 """
 import os
 import smtplib
+import time
+import threading
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional
@@ -71,10 +73,37 @@ RESEND_AVAILABLE_AND_CONFIGURED = RESEND_AVAILABLE and bool(RESEND_API_KEY)
 # Verificar si SMTP está configurado (fallback)
 SMTP_AVAILABLE = bool(SMTP_HOST and SMTP_USER and SMTP_PASS and EMAIL_FROM)
 
+# Instancia global de Resend (se inicializa si está configurado)
+resend_client = None
+
+# Rate limiting para Resend: máximo 2 requests por segundo
+# Usamos un lock y timestamp para controlar el rate
+_resend_rate_lock = threading.Lock()
+_last_resend_request_time = 0
+_min_request_interval = 0.5  # 500ms entre requests (permite 2 por segundo)
+
 # Configurar Resend si está disponible
 if RESEND_AVAILABLE_AND_CONFIGURED:
-    resend.api_key = RESEND_API_KEY
-    print("✅ Resend configurado correctamente")
+    try:
+        # Intentar diferentes formas de inicializar Resend según la versión de la librería
+        # Opción 1: Crear instancia con Resend(api_key=...)
+        try:
+            resend_client = resend.Resend(api_key=RESEND_API_KEY)
+            print("✅ Resend configurado correctamente (usando instancia)")
+        except (AttributeError, TypeError):
+            # Opción 2: Configurar API key directamente
+            try:
+                resend.api_key = RESEND_API_KEY
+                resend_client = resend  # Usar el módulo directamente
+                print("✅ Resend configurado correctamente (usando api_key directo)")
+            except Exception as e2:
+                print(f"WARNING: Error al configurar Resend: {e2}")
+                resend_client = None
+                RESEND_AVAILABLE_AND_CONFIGURED = False
+    except Exception as e:
+        print(f"WARNING: Error al inicializar Resend: {e}")
+        resend_client = None
+        RESEND_AVAILABLE_AND_CONFIGURED = False
 elif RESEND_AVAILABLE and not RESEND_API_KEY:
     print("WARNING: Resend está instalado pero RESEND_API_KEY no está configurado.")
     print("   Configura RESEND_API_KEY en Railway para usar Resend (recomendado).")
@@ -126,6 +155,24 @@ def send_email(
     return False
 
 
+def _wait_for_rate_limit():
+    """
+    Espera el tiempo necesario para respetar el rate limit de Resend (2 requests/segundo).
+    Usa un lock para asegurar que solo un thread a la vez controle el rate limiting.
+    """
+    global _last_resend_request_time
+    
+    with _resend_rate_lock:
+        current_time = time.time()
+        time_since_last_request = current_time - _last_resend_request_time
+        
+        if time_since_last_request < _min_request_interval:
+            wait_time = _min_request_interval - time_since_last_request
+            time.sleep(wait_time)
+        
+        _last_resend_request_time = time.time()
+
+
 def _send_email_resend(
     to: str,
     subject: str,
@@ -134,6 +181,7 @@ def _send_email_resend(
 ) -> bool:
     """
     Envía un email usando Resend API (método principal, funciona en Railway).
+    Implementa rate limiting (2 requests/segundo) y retry con backoff exponencial.
     
     Args:
         to: Dirección de email del destinatario
@@ -144,6 +192,10 @@ def _send_email_resend(
     Returns:
         True si el email se envió correctamente, False en caso contrario
     """
+    if not resend_client:
+        print("ERROR: Cliente de Resend no está inicializado")
+        return False
+    
     try:
         # Generar texto plano desde HTML si no se proporciona
         if not text:
@@ -163,8 +215,7 @@ def _send_email_resend(
             # Formato simple, usar como está
             pass
         
-        # Enviar email usando Resend
-        # Resend API espera: resend.emails.send(params)
+        # Parámetros para Resend
         params = {
             "from": from_email,
             "to": [to],
@@ -173,36 +224,83 @@ def _send_email_resend(
             "text": text
         }
         
-        try:
-            email = resend.emails.send(params)
-            
-            # Resend devuelve un objeto con 'id' si es exitoso
-            if email and hasattr(email, 'id'):
-                print(f"OK: Email enviado exitosamente a {to} usando Resend: {subject}")
-                print(f"    Email ID: {email.id}")
-                return True
-            elif email and isinstance(email, dict) and 'id' in email:
-                print(f"OK: Email enviado exitosamente a {to} usando Resend: {subject}")
-                print(f"    Email ID: {email['id']}")
-                return True
-            else:
-                print(f"ERROR: Resend no devolvió un ID de email válido. Respuesta: {email}")
-                return False
-        except AttributeError:
-            # Si resend.emails no existe, intentar resend.Emails
+        # Retry con backoff exponencial para manejar rate limiting
+        max_retries = 3
+        base_delay = 1.0  # 1 segundo base
+        
+        for attempt in range(max_retries):
             try:
-                email = resend.Emails.send(params)
-                if email and (hasattr(email, 'id') or (isinstance(email, dict) and 'id' in email)):
-                    email_id = email.id if hasattr(email, 'id') else email.get('id', 'unknown')
+                # Esperar para respetar rate limit antes de cada intento
+                _wait_for_rate_limit()
+                
+                # Enviar email usando Resend
+                # Intentar diferentes formas según la versión de la librería
+                email = None
+                last_error = None
+                
+                # Opción 1: resend_client.emails.send() (instancia)
+                if hasattr(resend_client, 'emails') and hasattr(resend_client.emails, 'send'):
+                    try:
+                        email = resend_client.emails.send(params)
+                    except AttributeError as e:
+                        last_error = e
+                # Opción 2: resend_client.Emails.send() (instancia con mayúscula)
+                elif hasattr(resend_client, 'Emails') and hasattr(resend_client.Emails, 'send'):
+                    try:
+                        email = resend_client.Emails.send(params)
+                    except AttributeError as e:
+                        last_error = e
+                # Opción 3: resend.emails.send() (módulo directo)
+                elif hasattr(resend, 'emails') and hasattr(resend.emails, 'send'):
+                    try:
+                        email = resend.emails.send(params)
+                    except AttributeError as e:
+                        last_error = e
+                # Opción 4: resend.Emails.send() (módulo directo con mayúscula)
+                elif hasattr(resend, 'Emails') and hasattr(resend.Emails, 'send'):
+                    try:
+                        email = resend.Emails.send(params)
+                    except AttributeError as e:
+                        last_error = e
+                else:
+                    raise Exception(f"No se pudo encontrar el método correcto para enviar email. Cliente: {type(resend_client)}")
+                
+                if email is None and last_error:
+                    raise last_error
+                
+                # Resend devuelve un objeto con 'id' si es exitoso
+                if email and hasattr(email, 'id'):
                     print(f"OK: Email enviado exitosamente a {to} usando Resend: {subject}")
-                    print(f"    Email ID: {email_id}")
+                    print(f"    Email ID: {email.id}")
+                    return True
+                elif email and isinstance(email, dict) and 'id' in email:
+                    print(f"OK: Email enviado exitosamente a {to} usando Resend: {subject}")
+                    print(f"    Email ID: {email['id']}")
                     return True
                 else:
                     print(f"ERROR: Resend no devolvió un ID de email válido. Respuesta: {email}")
                     return False
-            except Exception as e2:
-                print(f"ERROR: Error al enviar email con Resend (intento alternativo): {e2}")
-                raise
+                    
+            except Exception as e:
+                error_str = str(e)
+                
+                # Si es error de rate limiting, intentar retry con backoff
+                if "Too many requests" in error_str or "rate limit" in error_str.lower():
+                    if attempt < max_retries - 1:
+                        # Calcular delay exponencial: 1s, 2s, 4s
+                        delay = base_delay * (2 ** attempt)
+                        print(f"WARNING: Rate limit alcanzado. Esperando {delay:.1f}s antes de reintentar (intento {attempt + 1}/{max_retries})...")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        print(f"ERROR: Rate limit alcanzado después de {max_retries} intentos")
+                        raise
+                else:
+                    # Otro tipo de error, no reintentar
+                    raise
+        
+        # Si llegamos aquí, todos los reintentos fallaron
+        return False
             
     except Exception as e:
         print(f"ERROR: Error al enviar email con Resend: {e}")
