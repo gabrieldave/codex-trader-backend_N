@@ -758,6 +758,14 @@ except Exception as e:
     import traceback
     logger.error(f"❌ Traceback completo: {traceback.format_exc()}")
 
+# Registrar router de debug (para diagnóstico desde móvil)
+try:
+    from routers.debug import debug_router
+    app.include_router(debug_router)
+    logger.info("✅ Router de debug registrado")
+except Exception as e:
+    logger.warning(f"⚠️ No se pudo registrar router de debug: {e}")
+
 # Middleware para logging de requests (para debugging)
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
