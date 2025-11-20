@@ -512,10 +512,13 @@ async def notify_user_registration(
                 print(f"   [OK] Usuario obtenido desde token: {user.email if user else 'None'}")
                 print(f"   [DEBUG] User ID: {user.id if user else 'None'}")
             except HTTPException as e:
-                logger.warning(f"[WARNING] Error al obtener usuario desde token: {e.detail}")
-                logger.warning(f"[DEBUG] Status code: {e.status_code}")
-                print(f"   [WARNING] Error al obtener usuario desde token: {e.detail}")
-                print(f"   [DEBUG] Status code: {e.status_code}")
+                # Error esperado si el token expiró - no es crítico, intentaremos otros métodos
+                error_detail = str(e.detail)
+                if "Session from session_id" in error_detail or "Token has expired" in error_detail:
+                    logger.debug(f"[DEBUG] Token expirado o sesión inválida (esperado): {error_detail[:80]}")
+                else:
+                    logger.warning(f"[WARNING] Error al obtener usuario desde token: {e.detail}")
+                    logger.warning(f"[DEBUG] Status code: {e.status_code}")
                 # Si falla la autenticación, continuar para intentar con token_hash
                 pass
             except Exception as e:

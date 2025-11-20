@@ -107,13 +107,29 @@ async def get_user(authorization: Optional[str] = Header(None)):
         raise
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"❌ get_user: Error al validar token con Supabase: {error_msg}")
-        # Log más detallado del error
-        if "Invalid API key" in error_msg or "Invalid URL" in error_msg:
-            logger.error(f"❌ Posible problema con configuración de Supabase: URL={SUPABASE_REST_URL[:50]}...")
+        # Errores comunes que son esperados (token expirado, sesión inválida, etc.)
+        expected_errors = [
+            "Session from session_id claim in JWT does not exist",
+            "Token has expired",
+            "Invalid token",
+            "JWT expired",
+            "Session not found"
+        ]
+        
+        is_expected_error = any(expected in error_msg for expected in expected_errors)
+        
+        if is_expected_error:
+            # Log como warning en lugar de error, ya que es un caso esperado
+            logger.debug(f"⚠️ get_user: Token inválido o expirado (esperado): {error_msg[:80]}")
+        else:
+            logger.error(f"❌ get_user: Error al validar token con Supabase: {error_msg}")
+            # Log más detallado del error solo si no es un error esperado
+            if "Invalid API key" in error_msg or "Invalid URL" in error_msg:
+                logger.error(f"❌ Posible problema con configuración de Supabase: URL={SUPABASE_REST_URL[:50]}...")
+        
         raise HTTPException(
             status_code=401,
-            detail=f"Error al validar token: {error_msg[:100]}"
+            detail=f"Token inválido o expirado. Por favor, inicia sesión nuevamente."
         )
 
 
