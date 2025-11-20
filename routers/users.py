@@ -482,19 +482,14 @@ async def notify_user_registration(
     
     IMPORTANTE: El envío de email se hace en segundo plano y no bloquea la respuesta.
     """
-    logger.info("=" * 60)
-    logger.info("[API] POST /users/notify-registration recibido")
-    logger.info(f"   Authorization header presente: {bool(authorization)}")
-    logger.info(f"   Token_hash en body: {bool(input_data and input_data.token_hash)}")
-    logger.info(f"   User_id en body: {bool(input_data and input_data.user_id)}")
-    logger.info(f"   Triggered_by: {input_data.triggered_by if input_data else 'None'}")
-    logger.info(f"   Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"[API] POST /users/notify-registration recibido")
-    print(f"   Authorization header presente: {bool(authorization)}")
-    print(f"   Token_hash en body: {bool(input_data and input_data.token_hash)}")
-    print(f"   User_id en body: {bool(input_data and input_data.user_id)}")
-    print(f"   Triggered_by: {input_data.triggered_by if input_data else 'None'}")
-    print(f"   Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    # Logging reducido para evitar saturación de logs
+    logger.debug("=" * 60)
+    logger.debug("[API] POST /users/notify-registration recibido")
+    logger.debug(f"   Authorization header presente: {bool(authorization)}")
+    logger.debug(f"   Token_hash en body: {bool(input_data and input_data.token_hash)}")
+    logger.debug(f"   User_id en body: {bool(input_data and input_data.user_id)}")
+    logger.debug(f"   Triggered_by: {input_data.triggered_by if input_data else 'None'}")
+    logger.debug(f"   Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     try:
         user = None
@@ -502,15 +497,10 @@ async def notify_user_registration(
         # Intentar obtener usuario desde el token de autenticación
         if authorization:
             try:
-                logger.info("[DEBUG] Intentando obtener usuario desde token de autenticación...")
-                logger.info(f"[DEBUG] Token (primeros 20 chars): {authorization[:20] if authorization else 'None'}...")
-                print(f"   [DEBUG] Intentando obtener usuario desde token de autenticación...")
-                print(f"   [DEBUG] Token (primeros 20 chars): {authorization[:20] if authorization else 'None'}...")
+                logger.debug("[DEBUG] Intentando obtener usuario desde token de autenticación...")
                 user = await get_user(authorization)
-                logger.info(f"[OK] Usuario obtenido desde token: {user.email if user else 'None'}")
-                logger.info(f"[DEBUG] User ID: {user.id if user else 'None'}")
-                print(f"   [OK] Usuario obtenido desde token: {user.email if user else 'None'}")
-                print(f"   [DEBUG] User ID: {user.id if user else 'None'}")
+                logger.debug(f"[OK] Usuario obtenido desde token: {user.email if user else 'None'}")
+                logger.debug(f"[DEBUG] User ID: {user.id if user else 'None'}")
             except HTTPException as e:
                 # Error esperado si el token expiró - no es crítico, intentaremos otros métodos
                 error_detail = str(e.detail)
@@ -531,26 +521,22 @@ async def notify_user_registration(
         # Si no hay usuario autenticado pero hay user_id (desde trigger), obtener usuario directamente
         if not user and input_data and input_data.user_id:
             try:
-                print(f"   [TRIGGER] Intentando obtener usuario desde user_id: {input_data.user_id}")
-                logger.info(f"[TRIGGER] Intentando obtener usuario desde user_id: {input_data.user_id}")
-                # Obtener usuario directamente desde Supabase usando service key
-                user_response = supabase_client.auth.admin.get_user_by_id(input_data.user_id)
-                if user_response and user_response.user:
-                    user = user_response.user
-                    print(f"   [OK] Usuario obtenido desde user_id (trigger): {user.email if user else 'None'}")
-                    logger.info(f"[OK] Usuario obtenido desde user_id (trigger): {user.email if user else 'None'}")
+                    logger.debug(f"[TRIGGER] Intentando obtener usuario desde user_id: {input_data.user_id}")
+                    # Obtener usuario directamente desde Supabase usando service key
+                    user_response = supabase_client.auth.admin.get_user_by_id(input_data.user_id)
+                    if user_response and user_response.user:
+                        user = user_response.user
+                        logger.debug(f"[OK] Usuario obtenido desde user_id (trigger): {user.email if user else 'None'}")
                 else:
-                    print(f"   [ERROR] No se pudo obtener usuario desde user_id")
                     logger.warning(f"[ERROR] No se pudo obtener usuario desde user_id: {input_data.user_id}")
             except Exception as e:
-                print(f"   [ERROR] Error al obtener usuario desde user_id: {str(e)}")
                 logger.error(f"[ERROR] Error al obtener usuario desde user_id: {str(e)}")
                 # Continuar para intentar con token_hash si está disponible
         
         # Si no hay usuario autenticado pero hay token_hash, verificar el token_hash
         if not user and input_data and input_data.token_hash:
             try:
-                print(f"   Intentando verificar token_hash...")
+                logger.debug(f"Intentando verificar token_hash...")
                 # Verificar el token_hash con Supabase
                 verify_response = supabase_client.auth.verify_otp({
                     "type": "email",
@@ -558,15 +544,15 @@ async def notify_user_registration(
                 })
                 if verify_response.user:
                     user = verify_response.user
-                    print(f"   [OK] Usuario obtenido desde token_hash: {user.email if user else 'None'}")
+                    logger.debug(f"[OK] Usuario obtenido desde token_hash: {user.email if user else 'None'}")
                 else:
-                    print(f"   [ERROR] Token_hash invalido: no se obtuvo usuario")
+                    logger.warning(f"[ERROR] Token_hash invalido: no se obtuvo usuario")
                     raise HTTPException(
                         status_code=401,
                         detail="Token de confirmación inválido"
                     )
             except Exception as e:
-                print(f"   [ERROR] Error al verificar token_hash: {str(e)}")
+                logger.error(f"[ERROR] Error al verificar token_hash: {str(e)}")
                 raise HTTPException(
                     status_code=401,
                     detail=f"Error al verificar token de confirmación: {str(e)}"
@@ -574,7 +560,6 @@ async def notify_user_registration(
         
         # Si aún no hay usuario, error
         if not user:
-            print(f"   [ERROR] No se pudo obtener usuario. Authorization: {bool(authorization)}, Token_hash: {bool(input_data and input_data.token_hash)}, User_id: {bool(input_data and input_data.user_id)}")
             logger.error(f"[ERROR] No se pudo obtener usuario. Authorization: {bool(authorization)}, Token_hash: {bool(input_data and input_data.token_hash)}, User_id: {bool(input_data and input_data.user_id)}")
             raise HTTPException(
                 status_code=401,
@@ -583,8 +568,7 @@ async def notify_user_registration(
         
         user_id = user.id
         user_email = user.email
-        logger.info(f"[EMAIL] Procesando emails para usuario: {user_email} (ID: {user_id})")
-        print(f"   [EMAIL] Procesando emails para usuario: {user_email} (ID: {user_id})")
+        logger.debug(f"[EMAIL] Procesando emails para usuario: {user_email} (ID: {user_id})")
         
         # PROTECCIÓN CONTRA DUPLICADOS: Verificar si ya se enviaron los emails de bienvenida
         # Usar un sistema de cache en memoria para evitar duplicados en la misma sesión
@@ -610,8 +594,7 @@ async def notify_user_registration(
             sent_time = notify_user_registration._email_cache[cache_key]
             time_since_sent = current_time - sent_time
             if time_since_sent < 300:  # 5 minutos
-                logger.warning(f"[WARNING] Emails de bienvenida ya enviados recientemente para {user_email} (hace {int(time_since_sent)} segundos). Ignorando solicitud duplicada.")
-                print(f"   [WARNING] Emails de bienvenida ya enviados recientemente. Ignorando solicitud duplicada.")
+                logger.debug(f"[DEBUG] Emails de bienvenida ya enviados recientemente para {user_email} (hace {int(time_since_sent)} segundos). Ignorando solicitud duplicada.")
                 return {
                     "success": True,
                     "message": "Emails ya fueron enviados anteriormente",

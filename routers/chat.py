@@ -309,9 +309,44 @@ async def get_chat_sessions(user = Depends(get_user), limit: int = 50):
     """
     Endpoint para obtener la lista de sesiones de chat del usuario autenticado.
     Devuelve las sesiones ordenadas por fecha de actualización (más recientes primero).
+    Protegido contra llamadas duplicadas simultáneas.
     """
+    # PROTECCIÓN CONTRA DUPLICADOS: Verificar si ya se está procesando una solicitud
+    import time
+    
+    cache_key = None  # Inicializar para usar en except
+    
     try:
         user_id = user.id
+        
+        # Crear una clave única para este usuario
+        cache_key = f"get_sessions_{user_id}"
+        
+        # Cache simple en memoria para evitar llamadas duplicadas
+        if not hasattr(get_chat_sessions, '_request_cache'):
+            get_chat_sessions._request_cache = {}
+        
+        # Limpiar cache antiguo (más de 2 segundos)
+        current_time = time.time()
+        get_chat_sessions._request_cache = {
+            k: v for k, v in get_chat_sessions._request_cache.items()
+            if current_time - v.get('time', 0) < 2  # 2 segundos
+        }
+        
+        # Verificar si ya hay una solicitud en curso
+        if cache_key in get_chat_sessions._request_cache:
+            cached_data = get_chat_sessions._request_cache[cache_key]
+            time_since_request = current_time - cached_data.get('time', 0)
+            if time_since_request < 0.5:  # Menos de 500ms - retornar cache
+                logger.debug(f"⚠️ Solicitud duplicada detectada para usuario {user_id} (hace {int(time_since_request * 1000)}ms). Retornando cache.")
+                return cached_data.get('response', {"sessions": [], "total": 0})
+        
+        # Marcar solicitud en curso
+        get_chat_sessions._request_cache[cache_key] = {
+            'time': current_time,
+            'response': None
+        }
+        
         logger.info(f"🔍 Obteniendo sesiones de chat para usuario: {user_id}")
         
         # Usar el cliente global con SERVICE_KEY (las políticas RLS permiten service_role)
@@ -326,35 +361,53 @@ async def get_chat_sessions(user = Depends(get_user), limit: int = 50):
             # Si la tabla no existe, retornar lista vacía en lugar de error
             if "relation" in error_msg.lower() and "does not exist" in error_msg.lower():
                 logger.warning("⚠️ La tabla 'chat_sessions' no existe. Retornando lista vacía.")
-                return {
+                response_data = {
                     "sessions": [],
                     "total": 0
                 }
+                # Limpiar cache en caso de error
+                if cache_key in get_chat_sessions._request_cache:
+                    del get_chat_sessions._request_cache[cache_key]
+                return response_data
             raise
         
         if not sessions_response.data:
             logger.info(f"ℹ️ No hay sesiones para usuario: {user_id}")
-            return {
+            response_data = {
                 "sessions": [],
                 "total": 0
             }
+            # Guardar en cache
+            if cache_key in get_chat_sessions._request_cache:
+                get_chat_sessions._request_cache[cache_key]['response'] = response_data
+            return response_data
         
         logger.info(f"✅ Sesiones obtenidas: {len(sessions_response.data)} para usuario: {user_id}")
         
-        return {
+        response_data = {
             "sessions": sessions_response.data,
             "total": len(sessions_response.data)
         }
+        
+        # Guardar en cache
+        if cache_key in get_chat_sessions._request_cache:
+            get_chat_sessions._request_cache[cache_key]['response'] = response_data
+        
+        return response_data
     except HTTPException as http_ex:
         # Si es un error de autenticación (401), re-lanzarlo
         if http_ex.status_code == 401:
             raise
         # Para otros errores HTTP, retornar lista vacía
         logger.warning(f"⚠️ Error HTTP {http_ex.status_code} en /chat-sessions: {http_ex.detail}")
-        return {
+        response_data = {
             "sessions": [],
             "total": 0
         }
+        # Limpiar cache en caso de error
+        if cache_key and 'get_chat_sessions' in globals() and hasattr(get_chat_sessions, '_request_cache') and cache_key in get_chat_sessions._request_cache:
+            del get_chat_sessions._request_cache[cache_key]
+        return response_data
     except Exception as e:
         error_msg = str(e)
         logger.error(f"❌ Error en /chat-sessions: {error_msg}")
@@ -375,10 +428,14 @@ async def get_chat_sessions(user = Depends(get_user), limit: int = 50):
             }
         # En lugar de devolver error 500, retornar lista vacía
         logger.warning("⚠️ Retornando lista vacía debido a error")
-        return {
+        response_data = {
             "sessions": [],
             "total": 0
         }
+        # Limpiar cache en caso de error
+        if cache_key and cache_key in get_chat_sessions._request_cache:
+            del get_chat_sessions._request_cache[cache_key]
+        return response_data
 
 
 @chat_router.get("/chat-sessions/{conversation_id}/messages")
@@ -425,12 +482,82 @@ async def get_conversation_messages(conversation_id: str, user = Depends(get_use
 async def create_chat_session(create_input: Optional[CreateChatSessionInput] = None, user = Depends(get_user)):
     """
     Endpoint para crear una nueva sesión de chat.
+    Protegido contra llamadas duplicadas simultáneas.
     """
     try:
         user_id = user.id
         logger.info(f"🔍 Creando nueva sesión de chat para usuario: {user_id}")
         
+        # PROTECCIÓN CONTRA DUPLICADOS: Verificar si ya se creó una sesión recientemente
+        import hashlib
+        import time
+        
+        # Crear una clave única para este usuario en esta sesión
+        cache_key = f"create_session_{user_id}"
+        
+        # Cache simple en memoria (se puede mejorar con Redis en producción)
+        if not hasattr(create_chat_session, '_session_cache'):
+            create_chat_session._session_cache = {}
+        
+        # Limpiar cache antiguo (más de 5 segundos)
+        current_time = time.time()
+        create_chat_session._session_cache = {
+            k: v for k, v in create_chat_session._session_cache.items()
+            if current_time - v.get('time', 0) < 5  # 5 segundos
+        }
+        
+        # Verificar si ya se creó una sesión en los últimos 2 segundos
+        if cache_key in create_chat_session._session_cache:
+            cached_data = create_chat_session._session_cache[cache_key]
+            time_since_created = current_time - cached_data.get('time', 0)
+            if time_since_created < 2:  # 2 segundos
+                logger.warning(f"⚠️ Sesión ya creada recientemente para usuario {user_id} (hace {int(time_since_created)} segundos). Retornando sesión existente.")
+                return {
+                    "session": cached_data.get('session'),
+                    "message": "Sesión ya existe (evitando duplicado)"
+                }
+        
         try:
+            # Verificar si hay una sesión reciente (últimos 3 segundos) antes de crear una nueva
+            try:
+                recent_sessions = supabase_client.table("chat_sessions").select(
+                    "id, title, created_at"
+                ).eq("user_id", user_id).order("created_at", desc=True).limit(1).execute()
+                
+                if recent_sessions.data:
+                    session = recent_sessions.data[0]
+                    from datetime import datetime, timezone
+                    created_at_str = session.get("created_at")
+                    if created_at_str:
+                        # Parsear la fecha y verificar si es muy reciente
+                        try:
+                            if isinstance(created_at_str, str):
+                                created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                            else:
+                                created_at = created_at_str
+                            
+                            now = datetime.now(timezone.utc)
+                            if isinstance(created_at, datetime):
+                                if created_at.tzinfo is None:
+                                    created_at = created_at.replace(tzinfo=timezone.utc)
+                                time_diff = (now - created_at).total_seconds()
+                                
+                                if time_diff < 3:  # Menos de 3 segundos
+                                    logger.info(f"ℹ️ Usando sesión reciente existente (creada hace {int(time_diff)} segundos)")
+                                    # Guardar en cache
+                                    create_chat_session._session_cache[cache_key] = {
+                                        'session': session,
+                                        'time': current_time
+                                    }
+                                    return {
+                                        "session": session,
+                                        "message": "Usando sesión reciente existente"
+                                    }
+                        except Exception as time_check_error:
+                            logger.debug(f"⚠️ Error al verificar tiempo de sesión: {time_check_error}")
+            except Exception as check_error:
+                logger.debug(f"⚠️ Error al verificar sesiones recientes: {check_error}")
+            
             # Crear nueva sesión de chat
             new_session = supabase_client.table("chat_sessions").insert({
                 "user_id": user_id,
@@ -453,6 +580,12 @@ async def create_chat_session(create_input: Optional[CreateChatSessionInput] = N
                 }
             
             logger.info(f"✅ Sesión creada exitosamente: {new_session.data[0]['id']}")
+            
+            # Guardar en cache para evitar duplicados
+            create_chat_session._session_cache[cache_key] = {
+                'session': new_session.data[0],
+                'time': time.time()
+            }
             
             return {
                 "session": new_session.data[0],
