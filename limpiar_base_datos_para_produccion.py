@@ -482,6 +482,28 @@ def limpiar_base_datos(admin_user_id: str):
         except:
             pass
         
+        # 10. IMPORTANTE: Verificar que el trigger sigue funcionando después de la limpieza
+        print("[10/10] Verificando que el trigger de creación de perfiles sigue funcionando...")
+        try:
+            # Verificar si el trigger existe
+            trigger_check = supabase.rpc('exec_sql', {
+                'query': """
+                SELECT tgname as trigger_name, tgenabled as enabled
+                FROM pg_trigger
+                WHERE tgname = 'on_auth_user_created';
+                """
+            }).execute()
+            
+            if trigger_check.data:
+                print("   ✅ Trigger 'on_auth_user_created' está configurado correctamente")
+            else:
+                print("   ⚠️  ADVERTENCIA: Trigger 'on_auth_user_created' NO existe")
+                print("   ⚠️  Los nuevos registros NO crearán perfiles automáticamente")
+                print("   ⚠️  Ejecuta el script 'reparar_trigger_perfiles.sql' para corregirlo")
+        except Exception as e:
+            print(f"   ⚠️  No se pudo verificar el trigger: {e}")
+            print("   ℹ️  Verifica manualmente que el trigger existe en Supabase Dashboard")
+        
         print("\n" + "="*60)
         print("✅ LIMPIEZA COMPLETADA")
         print("="*60)
