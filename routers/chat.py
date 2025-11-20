@@ -208,35 +208,14 @@ async def chat(query_input: QueryInput, background_tasks: BackgroundTasks, user 
             response_mode=query_input.response_mode or 'fast'
         )
     
-    # Paso 4: Si no hay chunks y no es saludo, retornar mensaje de error
+    # Paso 4: Si no hay chunks y no es saludo, usar IA directamente (sin RAG)
+    # Esto permite que la IA responda usando su conocimiento general cuando RAG no encuentra información
     if not retrieved_chunks and not is_greeting:
-        logger.warning("⚠️ No se encontraron chunks en RAG. Respondiendo sin contexto específico.")
-        respuesta_texto = "Lo siento, no pude encontrar información específica en la biblioteca para responder tu pregunta. Por favor, reformula tu consulta o intenta con términos más generales relacionados con trading."
-        tokens_usados = 0
-        nuevos_tokens = tokens_restantes
-        conversation_id = query_input.conversation_id
-        
-        # Guardar en background
-        background_tasks.add_task(
-            persist_chat_background_task,
-            str(user_id),
-            query_input.dict(),
-            {
-                "full_response": respuesta_texto,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0,
-                "prompt_text": query_input.query,
-                "error": None,
-                "conversation_id": conversation_id
-            },
-            tokens_restantes,
-            llm_service.get_chat_model(),
-            query_input.response_mode or 'fast',
-            conversation_id
-        )
-        
-        return {"response": respuesta_texto, "tokens_used": 0}
+        logger.warning("⚠️ No se encontraron chunks en RAG. Usando IA directamente con conocimiento general.")
+        # Continuar con el flujo normal pero sin contexto RAG
+        # El LLM usará su conocimiento general para responder
+        context_text = ""
+        citation_list = ""
     
     # Paso 5: Crear o verificar sesión de chat
     conversation_id = query_input.conversation_id

@@ -84,15 +84,22 @@ Responde siempre en español."""
         
         if is_deep_mode and citation_list:
             # Modo Estudio Profundo con citaciones
-            system_prompt = f"""Eres Codex Trader, un experto financiero y asistente de RAG. Tu tarea es responder a la pregunta del usuario ÚNICAMENTE basándote en el contexto proporcionado.
+            system_prompt = f"""Eres Codex Trader, un experto financiero y asistente de RAG. Tu tarea es responder a la pregunta del usuario basándote en el contexto proporcionado.
 
 Sigue estrictamente estas reglas:
 
-1. Proporciona un resumen conciso y detallado.
+1. **PRIORIDAD 1 - Usar RAG**: Si el contexto recuperado contiene información relevante para responder la pregunta, úsalo como base principal de tu respuesta.
 
-2. POR CADA HECHO que utilices, debes **citar inmediatamente la fuente** usando el formato [Fuente X] al final de la frase.
+2. **PRIORIDAD 2 - Complementar con conocimiento general**: Si el contexto recuperado es insuficiente o no cubre completamente la pregunta, complementa tu respuesta usando tu conocimiento general sobre trading, pero siempre menciona primero lo que encontraste en el contexto.
 
-3. Al final de la respuesta, bajo el encabezado 'Fuentes Utilizadas:', lista todas las fuentes citadas.
+3. **PRIORIDAD 3 - Usar solo conocimiento general**: Si el contexto recuperado NO contiene información relevante para la pregunta (por ejemplo, si la pregunta es sobre un tema completamente diferente), entonces:
+   - NO digas "no puedo responder" o "el contexto no contiene información"
+   - En su lugar, usa tu conocimiento general para dar una respuesta completa y útil
+   - Al final, menciona brevemente que esta información proviene de conocimiento general sobre trading
+
+4. POR CADA HECHO del contexto RAG que utilices, debes **citar inmediatamente la fuente** usando el formato [X] al final de la frase, donde X es el número de la fuente.
+
+5. Al final de la respuesta, bajo el encabezado '**Fuentes Utilizadas:**', lista todas las fuentes del RAG citadas en el formato [X] Nombre del libro. Si solo usaste conocimiento general, omite esta sección.
 
 Contexto Recuperado:
 
@@ -114,8 +121,10 @@ Fuentes a Listar:
             return system_prompt, 4000
         else:
             # Modo Rápido o sin citaciones
-            context_section = f"""
-Contexto:
+            if context:
+                # Hay contexto RAG disponible
+                context_section = f"""
+Contexto Recuperado:
 
 ---
 
@@ -123,7 +132,22 @@ Contexto:
 
 ---
 
-""" if context else ""
+INSTRUCCIONES:
+- Usa el contexto recuperado como base principal de tu respuesta
+- Si el contexto es insuficiente o no cubre completamente la pregunta, complementa con tu conocimiento general sobre trading
+- Si el contexto NO es relevante para la pregunta, usa tu conocimiento general para responder completamente
+- NO digas "no puedo responder" - siempre proporciona una respuesta útil
+
+"""
+            else:
+                # No hay contexto RAG - usar conocimiento general
+                context_section = """
+INSTRUCCIONES:
+- No hay contexto RAG disponible para esta pregunta
+- Usa tu conocimiento general sobre trading para responder completamente
+- Proporciona una respuesta útil y detallada según el modo seleccionado
+
+"""
             base_prompt = config.ASSISTANT_DESCRIPTION + '\n\n' + greetings_instruction + '\n\n' + mode_instruction
             system_prompt = base_prompt + context_section
             max_tokens = 300 if response_mode == 'fast' else 4000
@@ -431,7 +455,7 @@ Si tienes menos de 5 párrafos, estás violando el modo Estudio Profundo.
             
             # Agregar citaciones si es modo deep
             if citation_list and is_deep_mode:
-                fuentes_chunk = "\n\n---\n**FUENTES DETALLADAS**:\n" + citation_list
+                fuentes_chunk = "\n\n---\n**FUENTES DETALLADAS:**\n" + citation_list
                 stream_state["full_response"] += fuentes_chunk
                 yield fuentes_chunk
                 

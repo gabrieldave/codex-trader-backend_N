@@ -207,7 +207,7 @@ class RAGService:
                 unique_sources[source_filename] = source_index
                 source_index += 1
             
-            source_tag = f"[Fuente {unique_sources[source_filename]}]"
+            source_tag = f"[{unique_sources[source_filename]}]"
             context_components.append(f"{source_tag} {chunk_content}")
         
         context_text = "\n---\n".join(context_components)
@@ -216,7 +216,7 @@ class RAGService:
         
         # Crear la lista final de fuentes para el LLM
         citation_list = "\n".join([
-            f"[{index}]: {filename}" 
+            f"[{index}] {filename}" 
             for filename, index in sorted(unique_sources.items(), key=lambda x: x[1])
         ])
         
