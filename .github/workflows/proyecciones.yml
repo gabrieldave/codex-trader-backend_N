@@ -1,0 +1,49 @@
+name: Reporte de Proyecciones Diario
+
+on:
+  schedule:
+    # Ejecutar todos los días a las 10:00 AM UTC (ajusta según tu zona horaria)
+    # UTC-6 (México): 10:00 UTC = 4:00 AM hora local
+    # Si quieres 10:00 AM hora local (México), usa: cron: '0 16 * * *'
+    - cron: '0 10 * * *'
+  workflow_dispatch:  # Permite ejecutarlo manualmente desde la UI de GitHub
+
+jobs:
+  generar-reporte:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias del sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      - name: Instalar dependencias de Python
+        run: |
+          pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple torch sentence-transformers
+          pip install -r requirements.txt
+
+      - name: Ejecutar script de proyecciones
+        env:
+          SUPABASE_REST_URL: ${{ secrets.SUPABASE_REST_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python scripts/generate_usage_projection.py --days 7 --users 100 1000 | tee reporte-proyecciones.txt
+
+      - name: Guardar reporte como artefacto
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-proyecciones-$(date +%Y%m%d)
+          path: reporte-proyecciones.txt
+          retention-days: 30
+
