@@ -748,8 +748,36 @@ try:
     from routers.users import users_router
     app.include_router(users_router)
     logger.info("✅ Router de usuarios registrado")
+    # Log de endpoints disponibles para debugging
+    logger.debug(f"[DEBUG] Router de usuarios incluye estos endpoints:")
+    for route in users_router.routes:
+        if hasattr(route, 'methods') and hasattr(route, 'path'):
+            logger.debug(f"   {', '.join(route.methods)} {route.path}")
 except Exception as e:
-    logger.warning(f"⚠️ No se pudo registrar router de usuarios: {e}")
+    logger.error(f"❌ No se pudo registrar router de usuarios: {e}")
+    import traceback
+    logger.error(f"❌ Traceback completo: {traceback.format_exc()}")
+
+# Middleware para logging de requests (para debugging)
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Middleware para logging de requests"""
+    path = request.url.path
+    method = request.method
+    
+    # Solo log de endpoints problemáticos
+    if path in ["/tokens", "/me/is-admin"] and method != "OPTIONS":
+        logger.info(f"[REQ] {method} {path} - Verificando método permitido")
+        logger.debug(f"[REQ-DEBUG] Headers: {dict(request.headers)}")
+    
+    response = await call_next(request)
+    
+    # Log si es 405
+    if response.status_code == 405 and path in ["/tokens", "/me/is-admin"]:
+        logger.error(f"❌ [405] {method} {path} - Method Not Allowed. Método recibido: {method}")
+        logger.error(f"❌ [405-DEBUG] Verifica que el router de usuarios esté correctamente registrado")
+    
+    return response
 
 # Endpoint OPTIONS explícito para preflight requests
 @app.options("/{full_path:path}")

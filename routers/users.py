@@ -24,6 +24,7 @@ async def get_tokens(user = Depends(get_user)):
     """
     Endpoint para consultar los tokens restantes del usuario autenticado.
     """
+    logger.debug(f"[DEBUG] Endpoint /tokens llamado (método GET)")
     try:
         user_id = user.id
         logger.info(f"🔍 Obteniendo tokens para usuario: {user_id}")
@@ -347,6 +348,7 @@ async def check_is_admin(user = Depends(get_user)):
     Endpoint para verificar si el usuario autenticado es administrador.
     Retorna True si el usuario tiene is_admin=True en profiles o está en ADMIN_EMAILS.
     """
+    logger.debug(f"[DEBUG] Endpoint /me/is-admin llamado (método GET)")
     try:
         user_id = user.id
         
@@ -521,12 +523,12 @@ async def notify_user_registration(
         # Si no hay usuario autenticado pero hay user_id (desde trigger), obtener usuario directamente
         if not user and input_data and input_data.user_id:
             try:
-                    logger.debug(f"[TRIGGER] Intentando obtener usuario desde user_id: {input_data.user_id}")
-                    # Obtener usuario directamente desde Supabase usando service key
-                    user_response = supabase_client.auth.admin.get_user_by_id(input_data.user_id)
-                    if user_response and user_response.user:
-                        user = user_response.user
-                        logger.debug(f"[OK] Usuario obtenido desde user_id (trigger): {user.email if user else 'None'}")
+                logger.debug(f"[TRIGGER] Intentando obtener usuario desde user_id: {input_data.user_id}")
+                # Obtener usuario directamente desde Supabase usando service key
+                user_response = supabase_client.auth.admin.get_user_by_id(input_data.user_id)
+                if user_response and user_response.user:
+                    user = user_response.user
+                    logger.debug(f"[OK] Usuario obtenido desde user_id (trigger): {user.email if user else 'None'}")
                 else:
                     logger.warning(f"[ERROR] No se pudo obtener usuario desde user_id: {input_data.user_id}")
             except Exception as e:
