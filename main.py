@@ -622,11 +622,38 @@ if RAG_AVAILABLE:
 # Inicializar cliente de Supabase para autenticación (usar URL REST)
 supabase_status = "❌ Error"
 try:
+    # Log de depuración para ver qué URL se está usando
+    logger.info(f"🔗 Intentando conectar a Supabase con URL: {SUPABASE_REST_URL}")
+    if not SUPABASE_REST_URL or not SUPABASE_REST_URL.startswith("https://"):
+        raise ValueError(f"SUPABASE_REST_URL inválida: {SUPABASE_REST_URL}")
+    if not SUPABASE_SERVICE_KEY:
+        raise ValueError("SUPABASE_SERVICE_KEY no está configurada")
+    
     supabase_client = create_client(SUPABASE_REST_URL, SUPABASE_SERVICE_KEY)
+    # Probar la conexión haciendo una consulta simple
+    try:
+        test_response = supabase_client.table("profiles").select("id").limit(1).execute()
+        logger.info(f"✅ Conexión a Supabase verificada exitosamente")
+    except Exception as test_error:
+        logger.warning(f"⚠️ Cliente creado pero no se pudo verificar conexión: {test_error}")
+        # Continuar de todas formas, puede ser un problema temporal
+    
     supabase_status = "✅ OK"
 except Exception as e:
-    logger.error(f"❌ Error al inicializar cliente de Supabase: {e}")
-    raise RuntimeError(f"No se pudo inicializar cliente de Supabase: {e}")
+    error_msg = str(e)
+    logger.error(f"❌ Error al inicializar cliente de Supabase: {error_msg}")
+    logger.error(f"   SUPABASE_REST_URL: {SUPABASE_REST_URL[:50] if SUPABASE_REST_URL else 'No configurada'}...")
+    logger.error(f"   SUPABASE_SERVICE_KEY: {'Configurada' if SUPABASE_SERVICE_KEY else 'No configurada'}")
+    
+    # Si es un error de DNS, dar sugerencias específicas
+    if "Name or service not known" in error_msg or "getaddrinfo failed" in error_msg:
+        logger.error("❌ ERROR DE DNS: No se puede resolver el hostname de Supabase")
+        logger.error("   SOLUCIONES:")
+        logger.error("   1. Verifica que SUPABASE_REST_URL esté configurada correctamente en Railway")
+        logger.error("   2. Asegúrate de que la URL sea: https://hozhzyzdurdpkjoehqrh.supabase.co")
+        logger.error("   3. Verifica que no haya espacios o caracteres extra en la variable de entorno")
+    
+    raise RuntimeError(f"No se pudo inicializar cliente de Supabase: {error_msg}")
 
 # Log final de estado del sistema - Todos los componentes importantes
 logger.info("=" * 80)

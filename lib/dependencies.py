@@ -94,6 +94,23 @@ async def get_user(authorization: Optional[str] = Header(None)):
     # Validar el token con Supabase
     try:
         logger.debug(f"🔐 get_user: Validando token (primeros 20 chars: {token[:20]}...)")
+        
+        # Verificar que el cliente esté inicializado
+        if not supabase_client:
+            logger.error("❌ get_user: supabase_client no está inicializado")
+            raise HTTPException(
+                status_code=500,
+                detail="Error de configuración del servidor. Contacta al administrador."
+            )
+        
+        # Verificar que la URL esté configurada
+        if not SUPABASE_REST_URL:
+            logger.error("❌ get_user: SUPABASE_REST_URL no está configurada")
+            raise HTTPException(
+                status_code=500,
+                detail="Error de configuración del servidor. Contacta al administrador."
+            )
+        
         user_response = supabase_client.auth.get_user(token)
         if not user_response.user:
             logger.warning("⚠️ get_user: user_response.user es None")
@@ -118,14 +135,33 @@ async def get_user(authorization: Optional[str] = Header(None)):
         
         is_expected_error = any(expected in error_msg for expected in expected_errors)
         
-        if is_expected_error:
+        # Errores de conexión/DNS (críticos)
+        is_connection_error = any(keyword in error_msg for keyword in [
+            "Name or service not known",
+            "getaddrinfo failed",
+            "Connection refused",
+            "Network is unreachable",
+            "Failed to resolve"
+        ])
+        
+        if is_connection_error:
+            logger.error(f"❌ get_user: ERROR DE CONEXIÓN con Supabase: {error_msg}")
+            logger.error(f"   URL configurada: {SUPABASE_REST_URL[:60] if SUPABASE_REST_URL else 'No configurada'}...")
+            logger.error(f"   Esto indica un problema de red o configuración. Verifica:")
+            logger.error(f"   1. Que SUPABASE_REST_URL esté correctamente configurada en Railway")
+            logger.error(f"   2. Que la URL sea accesible desde Railway")
+            raise HTTPException(
+                status_code=503,
+                detail="Servicio temporalmente no disponible. Error de conexión con la base de datos."
+            )
+        elif is_expected_error:
             # Log como warning en lugar de error, ya que es un caso esperado
             logger.debug(f"⚠️ get_user: Token inválido o expirado (esperado): {error_msg[:80]}")
         else:
             logger.error(f"❌ get_user: Error al validar token con Supabase: {error_msg}")
             # Log más detallado del error solo si no es un error esperado
             if "Invalid API key" in error_msg or "Invalid URL" in error_msg:
-                logger.error(f"❌ Posible problema con configuración de Supabase: URL={SUPABASE_REST_URL[:50]}...")
+                logger.error(f"❌ Posible problema con configuración de Supabase: URL={SUPABASE_REST_URL[:50] if SUPABASE_REST_URL else 'No configurada'}...")
         
         raise HTTPException(
             status_code=401,
