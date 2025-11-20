@@ -120,6 +120,9 @@ if SUPABASE_REST_URL and not SUPABASE_REST_URL.startswith("https://"):
     print(f"[DEBUG] ERROR: URL inválida (debe empezar con https://): {SUPABASE_REST_URL[:50]}...")
     SUPABASE_REST_URL = None
 
+# Variable global para ADMIN_EMAILS
+ADMIN_EMAILS = []
+
 if not SUPABASE_REST_URL or not SUPABASE_SERVICE_KEY:
     print("❌ ERROR: Faltan variables de entorno SUPABASE_URL y SUPABASE_SERVICE_KEY")
     print(f"   SUPABASE_REST_URL: {SUPABASE_REST_URL or 'No configurada'}")
@@ -130,6 +133,7 @@ print(f"[DEBUG] Conectando a Supabase: {SUPABASE_REST_URL[:50]}...")
 
 def get_admin_user_id():
     """Obtiene el ID del usuario administrador."""
+    global ADMIN_EMAILS
     try:
         from supabase import create_client
         
@@ -139,8 +143,13 @@ def get_admin_user_id():
         
         supabase = create_client(SUPABASE_REST_URL, SUPABASE_SERVICE_KEY)
         
+        # Obtener ADMIN_EMAILS para uso global
+        admin_emails_env = os.getenv("ADMIN_EMAILS", "").strip('"').strip("'").strip()
+        if admin_emails_env:
+            ADMIN_EMAILS = [email.strip().lower() for email in admin_emails_env.split(",") if email.strip()]
+        
         # Verificar por email en ADMIN_EMAILS
-        admin_emails = os.getenv("ADMIN_EMAILS", "").strip('"').strip("'").strip()
+        admin_emails = admin_emails_env
         if admin_emails:
             admin_list = [email.strip().lower() for email in admin_emails.split(",")]
             
@@ -184,7 +193,7 @@ def limpiar_base_datos(admin_user_id: str):
         print(f"Admin protegido (ID): {admin_user_id}\n")
         
         # 1. Eliminar eventos de referidos (excepto admin)
-        print("[1/8] Limpiando eventos de referidos...")
+        print("[1/9] Limpiando eventos de referidos...")
         try:
             # Primero obtener todos los eventos
             ref_events = supabase.table("referral_reward_events").select("id").execute()
@@ -205,7 +214,7 @@ def limpiar_base_datos(admin_user_id: str):
             # Continuar aunque falle
         
         # 2. Eliminar pagos de Stripe (excepto del admin si es necesario)
-        print("[2/8] Limpiando pagos de Stripe de prueba...")
+        print("[2/9] Limpiando pagos de Stripe de prueba...")
         try:
             # Obtener todos los pagos que NO son del admin
             payments = supabase.table("stripe_payments").select("id, user_id").neq("user_id", admin_user_id).execute()
@@ -224,7 +233,7 @@ def limpiar_base_datos(admin_user_id: str):
             print(f"   ⚠️  Error al limpiar stripe_payments: {e}")
         
         # 3. Eliminar eventos de uso de modelos (excepto del admin)
-        print("[3/8] Limpiando eventos de uso de modelos...")
+        print("[3/9] Limpiando eventos de uso de modelos...")
         try:
             # Obtener todos los eventos que NO son del admin
             usage_events = supabase.table("model_usage_events").select("id, user_id").neq("user_id", admin_user_id).execute()
@@ -243,7 +252,7 @@ def limpiar_base_datos(admin_user_id: str):
             print(f"   ⚠️  Error al limpiar model_usage_events: {e}")
         
         # 4. Eliminar sesiones de chat (excepto del admin)
-        print("[4/8] Limpiando sesiones de chat...")
+        print("[4/9] Limpiando sesiones de chat...")
         try:
             # Obtener todas las sesiones que NO son del admin
             chat_sessions = supabase.table("chat_sessions").select("id, user_id").neq("user_id", admin_user_id).execute()
@@ -262,7 +271,7 @@ def limpiar_base_datos(admin_user_id: str):
             print(f"   ⚠️  Error al limpiar chat_sessions: {e}")
         
         # 5. Eliminar conversaciones/mensajes (excepto del admin)
-        print("[5/8] Limpiando conversaciones y mensajes...")
+        print("[5/9] Limpiando conversaciones y mensajes...")
         try:
             # Obtener todas las conversaciones que NO son del admin
             conversations = supabase.table("conversations").select("id, user_id").neq("user_id", admin_user_id).execute()
@@ -281,7 +290,7 @@ def limpiar_base_datos(admin_user_id: str):
             print(f"   ⚠️  Error al limpiar conversations: {e}")
         
         # 6. Limpiar referencias de referidos en profiles (excepto admin)
-        print("[6/8] Limpiando referencias de referidos...")
+        print("[6/9] Limpiando referencias de referidos...")
         try:
             # Actualizar todos los perfiles (excepto admin) para limpiar referencias
             profiles = supabase.table("profiles").select("id").neq("id", admin_user_id).execute()
@@ -303,7 +312,7 @@ def limpiar_base_datos(admin_user_id: str):
             print(f"   ⚠️  Error al limpiar referencias: {e}")
         
         # 7. Obtener lista de usuarios a eliminar (excepto admin)
-        print("[7/8] Obteniendo lista de usuarios a eliminar...")
+        print("[7/9] Obteniendo lista de usuarios a eliminar...")
         try:
             users_response = supabase.table("profiles").select("id, email").neq("id", admin_user_id).execute()
             users_to_delete = users_response.data if users_response.data else []
@@ -313,7 +322,7 @@ def limpiar_base_datos(admin_user_id: str):
             users_to_delete = []
         
         # 8. Eliminar usuarios (excepto admin)
-        print("[8/8] Eliminando usuarios...")
+        print("[8/9] Eliminando usuarios...")
         if users_to_delete:
             deleted_count = 0
             failed_count = 0
@@ -359,6 +368,92 @@ def limpiar_base_datos(admin_user_id: str):
                 print(f"   ❌ Usuarios con error: {failed_count}")
         else:
             print("   ℹ️  No hay usuarios para eliminar")
+        
+        # 9. IMPORTANTE: Eliminar usuarios huérfanos (existen en auth.users pero NO en profiles)
+        print("[9/9] Eliminando usuarios huérfanos de auth.users...")
+        try:
+            import requests
+            
+            # Obtener todos los usuarios de auth.users
+            try:
+                auth_users_response = supabase.auth.admin.list_users()
+                if auth_users_response and hasattr(auth_users_response, 'users'):
+                    auth_users = auth_users_response.users
+                    
+                    # Obtener IDs de perfiles que existen
+                    existing_profiles = supabase.table("profiles").select("id").execute()
+                    existing_profile_ids = {p['id'] for p in (existing_profiles.data or [])}
+                    
+                    # Identificar usuarios huérfanos (no tienen perfil y no son admin)
+                    orphaned_users = []
+                    for auth_user in auth_users:
+                        user_id = auth_user.id
+                        user_email = (auth_user.email or "").lower()
+                        
+                        # Verificar si es admin
+                        is_admin = False
+                        if ADMIN_EMAILS:
+                            is_admin = user_email in ADMIN_EMAILS
+                        
+                        # Verificar si tiene is_admin en profiles (por si acaso)
+                        if not is_admin:
+                            try:
+                                profile_check = supabase.table("profiles").select("is_admin").eq("id", user_id).execute()
+                                if profile_check.data:
+                                    is_admin = profile_check.data[0].get("is_admin", False)
+                            except:
+                                pass
+                        
+                        # Si no es admin y no tiene perfil, es huérfano
+                        if not is_admin and user_id not in existing_profile_ids:
+                            orphaned_users.append({
+                                'id': user_id,
+                                'email': auth_user.email or "Sin email"
+                            })
+                    
+                    if orphaned_users:
+                        print(f"   ⚠️  Encontrados {len(orphaned_users)} usuario(s) huérfano(s) para eliminar")
+                        deleted_orphans = 0
+                        failed_orphans = 0
+                        
+                        for i, orphan in enumerate(orphaned_users, 1):
+                            user_id = orphan['id']
+                            user_email = orphan['email']
+                            
+                            print(f"   [{i}/{len(orphaned_users)}] Eliminando huérfano {user_email}...", end=" ")
+                            
+                            try:
+                                admin_api_url = f"{SUPABASE_REST_URL}/auth/v1/admin/users/{user_id}"
+                                headers = {
+                                    "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                                    "apikey": SUPABASE_SERVICE_KEY,
+                                    "Content-Type": "application/json"
+                                }
+                                response = requests.delete(admin_api_url, headers=headers, timeout=10)
+                                if response.status_code in [200, 204]:
+                                    print("✅")
+                                    deleted_orphans += 1
+                                else:
+                                    print(f"❌ Error {response.status_code}")
+                                    if response.text:
+                                        print(f"      {response.text[:100]}")
+                                    failed_orphans += 1
+                            except Exception as e:
+                                print(f"❌ Error: {str(e)[:50]}")
+                                failed_orphans += 1
+                        
+                        print(f"\n   ✅ Usuarios huérfanos eliminados: {deleted_orphans}")
+                        if failed_orphans > 0:
+                            print(f"   ❌ Usuarios huérfanos con error: {failed_orphans}")
+                    else:
+                        print("   ✅ No hay usuarios huérfanos")
+                else:
+                    print("   ⚠️  No se pudieron obtener usuarios de auth.users (requiere permisos admin)")
+            except Exception as e:
+                print(f"   ⚠️  Error al obtener usuarios de auth.users: {e}")
+                print("   ℹ️  Esto es normal si no tienes permisos de admin")
+        except Exception as e:
+            print(f"   ⚠️  Error al limpiar usuarios huérfanos: {e}")
         
         # Verificar resultado final
         print("\n" + "="*60)
@@ -407,11 +502,13 @@ def main():
     print()
     print("⚠️  ADVERTENCIA: Este script es IRREVERSIBLE")
     print("   - Eliminará TODOS los usuarios excepto el admin")
+    print("   - Eliminará usuarios de auth.users Y profiles")
     print("   - Eliminará TODOS los chats, mensajes y conversaciones")
     print("   - Eliminará TODOS los eventos de uso de modelos")
     print("   - Eliminará TODOS los pagos de Stripe de prueba")
     print("   - Eliminará TODOS los eventos de referidos")
     print("   - Limpiará todas las referencias de referidos")
+    print("   - Eliminará usuarios huérfanos (en auth.users pero no en profiles)")
     print()
     print("   Solo se mantendrá el usuario administrador y sus datos.")
     print()
