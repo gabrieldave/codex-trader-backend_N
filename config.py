@@ -139,7 +139,7 @@ def get_model_costs(provider: str, model: str) -> tuple[float, float]:
         if "flash" in model_lower:
             return (GOOGLE_GEMINI_FLASH_INPUT_COST_PER_MILLION, GOOGLE_GEMINI_FLASH_OUTPUT_COST_PER_MILLION)
         else:
-            return (GOOGLE_GEMINI_PRO_INPUT_COST_PER_MILLION, GOOGLE_GEMINI_PRO_OUTPUT_COST_PER_MILLION)
+        return (GOOGLE_GEMINI_PRO_INPUT_COST_PER_MILLION, GOOGLE_GEMINI_PRO_OUTPUT_COST_PER_MILLION)
     
     # Cohere
     elif provider_lower == "cohere" or "cohere" in model_lower:

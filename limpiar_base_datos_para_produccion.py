@@ -321,51 +321,59 @@ def limpiar_base_datos(admin_user_id: str):
             print(f"   ⚠️  Error al obtener usuarios: {e}")
             users_to_delete = []
         
-        # 8. Eliminar usuarios (excepto admin)
-        print("[8/9] Eliminando usuarios...")
+        # 8. Eliminar usuarios de auth.users PRIMERO, luego de profiles (excepto admin)
+        print("[8/9] Eliminando usuarios de auth.users y profiles...")
         if users_to_delete:
-            deleted_count = 0
-            failed_count = 0
+            deleted_auth = 0
+            deleted_profiles = 0
+            failed_auth = 0
+            failed_profiles = 0
+            import requests
             
             for i, user in enumerate(users_to_delete, 1):
                 user_id = user.get("id")
                 user_email = user.get("email", "Sin email")
                 
-                print(f"   [{i}/{len(users_to_delete)}] Eliminando {user_email}...", end=" ")
+                print(f"   [{i}/{len(users_to_delete)}] Eliminando {user_email}...")
                 
+                # PASO 1: Eliminar de auth.users PRIMERO (más importante)
                 try:
-                    # Intentar eliminar usando función RPC si existe
-                    try:
-                        supabase.rpc('delete_user_by_id', {'user_id_to_delete': user_id}).execute()
-                        print("✅")
-                        deleted_count += 1
-                    except:
-                        # Si RPC no existe, intentar eliminar desde Admin API
-                        try:
-                            import requests
-                            admin_api_url = f"{SUPABASE_REST_URL}/auth/v1/admin/users/{user_id}"
-                            headers = {
-                                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-                                "apikey": SUPABASE_SERVICE_KEY,
-                                "Content-Type": "application/json"
-                            }
-                            response = requests.delete(admin_api_url, headers=headers, timeout=10)
-                            if response.status_code in [200, 204]:
-                                print("✅")
-                                deleted_count += 1
-                            else:
-                                print(f"❌ Error {response.status_code}")
-                                failed_count += 1
-                        except Exception as api_error:
-                            print(f"❌ Error: {api_error}")
-                            failed_count += 1
-                except Exception as e:
-                    print(f"❌ Error: {e}")
-                    failed_count += 1
+                    admin_api_url = f"{SUPABASE_REST_URL}/auth/v1/admin/users/{user_id}"
+                    headers = {
+                        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                        "apikey": SUPABASE_SERVICE_KEY,
+                        "Content-Type": "application/json"
+                    }
+                    response = requests.delete(admin_api_url, headers=headers, timeout=10)
+                    if response.status_code in [200, 204]:
+                        print(f"      ✅ Eliminado de auth.users")
+                        deleted_auth += 1
+                    else:
+                        print(f"      ❌ Error eliminando de auth.users: {response.status_code}")
+                        if response.text:
+                            print(f"         {response.text[:100]}")
+                        failed_auth += 1
+                except Exception as auth_error:
+                    print(f"      ❌ Error eliminando de auth.users: {str(auth_error)[:50]}")
+                    failed_auth += 1
+                
+                # PASO 2: Eliminar de profiles (si aún existe)
+                try:
+                    supabase.table("profiles").delete().eq("id", user_id).execute()
+                    print(f"      ✅ Eliminado de profiles")
+                    deleted_profiles += 1
+                except Exception as profile_error:
+                    # Si ya fue eliminado de auth.users, puede que ya no exista en profiles
+                    print(f"      ⚠️  No se pudo eliminar de profiles (puede que ya no exista): {str(profile_error)[:50]}")
+                    failed_profiles += 1
             
-            print(f"\n   ✅ Usuarios eliminados: {deleted_count}")
-            if failed_count > 0:
-                print(f"   ❌ Usuarios con error: {failed_count}")
+            print(f"\n   📊 RESUMEN DE ELIMINACIÓN:")
+            print(f"      ✅ auth.users: {deleted_auth} eliminados, {failed_auth} con error")
+            print(f"      ✅ profiles: {deleted_profiles} eliminados, {failed_profiles} con error")
+            
+            if failed_auth > 0:
+                print(f"      ⚠️  ADVERTENCIA: {failed_auth} usuario(s) NO pudieron ser eliminados de auth.users")
+                print(f"      ⚠️  Esto causará problemas al intentar registrar esos emails nuevamente")
         else:
             print("   ℹ️  No hay usuarios para eliminar")
         
@@ -457,30 +465,128 @@ def limpiar_base_datos(admin_user_id: str):
         
         # Verificar resultado final
         print("\n" + "="*60)
-        print("VERIFICACIÓN FINAL")
+        print("VERIFICACIÓN FINAL - CRÍTICA")
         print("="*60)
         
-        # Verificar usuarios restantes
+        # Verificar usuarios restantes en profiles
+        print("\n[VERIFICACIÓN 1/3] Usuarios en profiles:")
         try:
-            remaining_users = supabase.table("profiles").select("id, email").execute()
-            if remaining_users.data:
-                print(f"✅ Usuarios restantes: {len(remaining_users.data)}")
-                for user in remaining_users.data:
-                    print(f"   - {user.get('email', 'Sin email')} (ID: {user.get('id')})")
+            remaining_profiles = supabase.table("profiles").select("id, email, is_admin").execute()
+            if remaining_profiles.data:
+                admin_profiles = [u for u in remaining_profiles.data if u.get('is_admin')]
+                non_admin_profiles = [u for u in remaining_profiles.data if not u.get('is_admin')]
+                
+                print(f"   ✅ Total: {len(remaining_profiles.data)}")
+                print(f"      - Admin: {len(admin_profiles)}")
+                for user in admin_profiles:
+                    print(f"        • {user.get('email', 'Sin email')} (ID: {user.get('id')})")
+                
+                if non_admin_profiles:
+                    print(f"      ❌ NO ADMIN: {len(non_admin_profiles)} (ESTOS DEBERÍAN ESTAR ELIMINADOS)")
+                    for user in non_admin_profiles:
+                        print(f"        • {user.get('email', 'Sin email')} (ID: {user.get('id')})")
+                else:
+                    print(f"      ✅ No hay usuarios no-admin en profiles")
             else:
-                print("ℹ️  No quedan usuarios (solo admin debería quedar)")
+                print("   ❌ ERROR: No quedan usuarios en profiles (debería quedar al menos el admin)")
         except Exception as e:
-            print(f"⚠️  Error al verificar usuarios restantes: {e}")
+            print(f"   ❌ Error al verificar profiles: {e}")
+        
+        # Verificar usuarios restantes en auth.users (MUY IMPORTANTE)
+        print("\n[VERIFICACIÓN 2/3] Usuarios en auth.users (CRÍTICO):")
+        try:
+            import requests
+            
+            # Obtener todos los usuarios de auth.users
+            admin_api_url = f"{SUPABASE_REST_URL}/auth/v1/admin/users"
+            headers = {
+                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                "apikey": SUPABASE_SERVICE_KEY,
+                "Content-Type": "application/json"
+            }
+            response = requests.get(admin_api_url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                auth_users_data = response.json()
+                auth_users = auth_users_data.get('users', [])
+                
+                if auth_users:
+                    # Obtener IDs de perfiles que existen
+                    existing_profiles = supabase.table("profiles").select("id, email, is_admin").execute()
+                    existing_profile_ids = {p['id'] for p in (existing_profiles.data or [])}
+                    existing_profile_emails = {p.get('email', '').lower() for p in (existing_profiles.data or []) if p.get('email')}
+                    
+                    admin_users_in_auth = []
+                    orphaned_users_in_auth = []
+                    
+                    for auth_user in auth_users:
+                        user_id = auth_user.get('id')
+                        user_email = (auth_user.get('email') or "").lower()
+                        
+                        # Verificar si es admin
+                        is_admin = False
+                        if ADMIN_EMAILS and user_email in ADMIN_EMAILS:
+                            is_admin = True
+                        elif user_id in existing_profile_ids:
+                            # Verificar si tiene is_admin en profiles
+                            try:
+                                profile = next((p for p in existing_profiles.data if p['id'] == user_id), None)
+                                if profile and profile.get('is_admin'):
+                                    is_admin = True
+                            except:
+                                pass
+                        
+                        if is_admin:
+                            admin_users_in_auth.append({
+                                'id': user_id,
+                                'email': auth_user.get('email', 'Sin email')
+                            })
+                        elif user_id not in existing_profile_ids:
+                            # Usuario huérfano (en auth.users pero NO en profiles)
+                            orphaned_users_in_auth.append({
+                                'id': user_id,
+                                'email': auth_user.get('email', 'Sin email')
+                            })
+                    
+                    print(f"   📊 Total en auth.users: {len(auth_users)}")
+                    print(f"      ✅ Admin: {len(admin_users_in_auth)}")
+                    for user in admin_users_in_auth:
+                        print(f"        • {user.get('email', 'Sin email')} (ID: {user.get('id')})")
+                    
+                    if orphaned_users_in_auth:
+                        print(f"\n      ⚠️⚠️⚠️  ADVERTENCIA CRÍTICA ⚠️⚠️⚠️")
+                        print(f"      ❌ HAY {len(orphaned_users_in_auth)} USUARIO(S) HUÉRFANO(S) EN auth.users:")
+                        for user in orphaned_users_in_auth:
+                            print(f"        ❌ {user.get('email', 'Sin email')} (ID: {user.get('id')})")
+                        print(f"\n      ⚠️  Estos usuarios NO podrán registrarse nuevamente")
+                        print(f"      ⚠️  Debes eliminarlos MANUALMENTE desde Supabase Dashboard:")
+                        print(f"      ⚠️  Authentication > Users > Buscar por email > Delete")
+                        print(f"      ⚠️  O ejecuta el script eliminar_usuarios_huerfanos.py")
+                    else:
+                        print(f"      ✅ No hay usuarios huérfanos en auth.users")
+                    
+                    # Verificar que los admin en auth.users coincidan con profiles
+                    admin_profiles_count = len([u for u in (existing_profiles.data or []) if u.get('is_admin')])
+                    if len(admin_users_in_auth) != admin_profiles_count:
+                        print(f"\n      ⚠️  ADVERTENCIA: Hay {len(admin_users_in_auth)} admin en auth.users pero {admin_profiles_count} en profiles")
+                else:
+                    print("   ❌ ERROR: No hay usuarios en auth.users (debería quedar al menos el admin)")
+            else:
+                print(f"   ⚠️  No se pudo verificar auth.users (Error {response.status_code})")
+                print(f"      Esto puede requerir permisos adicionales")
+        except Exception as e:
+            print(f"   ⚠️  Error al verificar auth.users: {e}")
+            print(f"      Verifica manualmente en Supabase Dashboard > Authentication > Users")
         
         # Verificar datos restantes del admin
+        print("\n[VERIFICACIÓN 3/3] Datos del admin preservados:")
         try:
             admin_chats = supabase.table("chat_sessions").select("id").eq("user_id", admin_user_id).execute()
             admin_events = supabase.table("model_usage_events").select("id").eq("user_id", admin_user_id).execute()
-            print(f"\n✅ Datos del admin preservados:")
-            print(f"   - Sesiones de chat: {len(admin_chats.data) if admin_chats.data else 0}")
-            print(f"   - Eventos de uso: {len(admin_events.data) if admin_events.data else 0}")
-        except:
-            pass
+            print(f"   ✅ Sesiones de chat: {len(admin_chats.data) if admin_chats.data else 0}")
+            print(f"   ✅ Eventos de uso: {len(admin_events.data) if admin_events.data else 0}")
+        except Exception as e:
+            print(f"   ⚠️  Error al verificar datos del admin: {e}")
         
         # 10. IMPORTANTE: Verificar que el trigger sigue funcionando después de la limpieza
         print("[10/10] Verificando que el trigger de creación de perfiles sigue funcionando...")
@@ -507,7 +613,50 @@ def limpiar_base_datos(admin_user_id: str):
         print("\n" + "="*60)
         print("✅ LIMPIEZA COMPLETADA")
         print("="*60)
-        print("La base de datos está lista para pruebas finales con amigos.")
+        
+        # Verificación final de garantía
+        print("\n🔍 GARANTÍA DE LIMPIEZA TOTAL:")
+        try:
+            # Verificar que no hay usuarios huérfanos
+            import requests
+            admin_api_url = f"{SUPABASE_REST_URL}/auth/v1/admin/users"
+            headers = {
+                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                "apikey": SUPABASE_SERVICE_KEY,
+                "Content-Type": "application/json"
+            }
+            response = requests.get(admin_api_url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                auth_users_data = response.json()
+                auth_users = auth_users_data.get('users', [])
+                existing_profiles = supabase.table("profiles").select("id").execute()
+                existing_profile_ids = {p['id'] for p in (existing_profiles.data or [])}
+                
+                orphaned_count = 0
+                for auth_user in auth_users:
+                    user_id = auth_user.get('id')
+                    user_email = (auth_user.get('email') or "").lower()
+                    
+                    # Verificar si es admin
+                    is_admin = ADMIN_EMAILS and user_email in ADMIN_EMAILS
+                    if not is_admin and user_id not in existing_profile_ids:
+                        orphaned_count += 1
+                
+                if orphaned_count == 0:
+                    print("   ✅ GARANTÍA: No hay usuarios huérfanos en auth.users")
+                    print("   ✅ Todos los usuarios (excepto admin) fueron eliminados correctamente")
+                    print("   ✅ Puedes reusar cualquier email para pruebas")
+                else:
+                    print(f"   ⚠️⚠️⚠️  NO SE CUMPLE LA GARANTÍA ⚠️⚠️⚠️")
+                    print(f"   ❌ HAY {orphaned_count} USUARIO(S) HUÉRFANO(S) EN auth.users")
+                    print(f"   ❌ Estos emails NO podrán registrarse nuevamente")
+                    print(f"   ❌ Debes eliminarlos manualmente desde Supabase Dashboard")
+        except Exception as e:
+            print(f"   ⚠️  No se pudo verificar la garantía: {e}")
+            print(f"   ⚠️  Verifica manualmente en Supabase Dashboard > Authentication > Users")
+        
+        print("\nLa base de datos está lista para pruebas finales con amigos.")
         print("Solo queda el usuario administrador y sus datos.")
         print()
         
