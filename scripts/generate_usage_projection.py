@@ -12,13 +12,116 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
+import re
+import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Dict, Iterable, List
 
+# Agregar el directorio raíz del backend al path para que Python encuentre los módulos
+backend_root = Path(__file__).parent.parent
+sys.path.insert(0, str(backend_root))
+
+# Función helper para limpiar variables de entorno (igual que en main.py)
+def get_env(key: str, default: str = "") -> str:
+    """Obtiene variable de entorno y limpia comillas."""
+    value = os.getenv(key, default)
+    if not value:
+        return default
+    return value.strip('"').strip("'").strip()
+
+# Importar funciones necesarias
 from lib.cost_reports import get_cost_summary_data, get_supabase_client
 from plans import CODEX_PLANS, CodexPlan
+
+# Cache para el cliente de Supabase
+_supabase_client_cache = None
+
+def _fix_malformed_url(url: str) -> str:
+    """Intenta corregir URLs mal formateadas (ej: con = en lugar de :)"""
+    if not url:
+        return url
+    # Si la URL tiene "=" en lugares donde debería tener ":", intentar corregir
+    if "=" in url and ("postgresql" in url or "postgres" in url):
+        # Caso 1: postgresql=//usuario=password@host=puerto
+        # Debería ser: postgresql://usuario:password@host:puerto
+        if "postgresql=" in url:
+            url = url.replace("postgresql=", "postgresql://")
+        elif "postgres=" in url:
+            url = url.replace("postgres=", "postgres://")
+        
+        # Corregir doble barra si existe
+        url = url.replace(":////", "://")
+        
+        # Reemplazar "=" antes de "@" (usuario=password@) por ":"
+        url = re.sub(r'([^@/])=([^@/]+)@', r'\1:\2@', url)
+        # Reemplazar "=" después de "@" y antes de números (host=puerto) por ":"
+        url = re.sub(r'@([^:]+)=(\d+)', r'@\1:\2', url)
+    return url
+
+def get_supabase_client_cached():
+    """Obtiene el cliente de Supabase con caché y mejor manejo de errores."""
+    global _supabase_client_cache
+    if _supabase_client_cache is None:
+        # Intentar usar SUPABASE_REST_URL directamente primero (más confiable)
+        supabase_rest_url = get_env("SUPABASE_REST_URL")
+        supabase_service_key = get_env("SUPABASE_SERVICE_KEY")
+        
+        # Depuración
+        if supabase_rest_url:
+            print(f"[DEBUG] SUPABASE_REST_URL encontrada: {supabase_rest_url[:40]}...")
+        else:
+            print(f"[DEBUG] SUPABASE_REST_URL no encontrada")
+        
+        if supabase_rest_url and supabase_rest_url.startswith("https://"):
+            # Usar URL REST directamente
+            if not supabase_service_key:
+                raise ValueError("SUPABASE_SERVICE_KEY debe estar configurada cuando se usa SUPABASE_REST_URL")
+            from supabase import create_client
+            _supabase_client_cache = create_client(supabase_rest_url, supabase_service_key)
+            print(f"[OK] Conectado a Supabase usando SUPABASE_REST_URL directamente")
+        else:
+            # Intentar corregir SUPABASE_DB_URL si está mal formateada
+            db_url = get_env("SUPABASE_DB_URL")
+            if db_url and ("=" in db_url and "://" not in db_url.replace("=", "")):
+                print("[!] Detectada URL mal formateada, intentando corregir...")
+                db_url_fixed = _fix_malformed_url(db_url)
+                if db_url_fixed != db_url:
+                    os.environ["SUPABASE_DB_URL"] = db_url_fixed
+                    print(f"[OK] URL corregida")
+            
+            # Intentar usar la función de cost_reports (que deriva desde DB_URL)
+            try:
+                _supabase_client_cache = get_supabase_client()
+                # Obtener la URL que se está usando (para depuración)
+                try:
+                    rest_url = get_env("SUPABASE_REST_URL") or "derivada desde DB_URL"
+                    print(f"[OK] Conectado a Supabase (URL: {rest_url[:30]}...)")
+                except:
+                    print(f"[OK] Conectado a Supabase usando configuracion derivada")
+            except Exception as e:
+                error_msg = str(e)
+                print("\n[ERROR] Error de configuracion de Supabase:")
+                print(f"   {error_msg}")
+                print("\n[SOLUCIONES]")
+                print("   1. Configura SUPABASE_REST_URL directamente (recomendado):")
+                print("      set SUPABASE_REST_URL=https://xxx.supabase.co")
+                print("   2. O configura SUPABASE_DB_URL con la URL de PostgreSQL")
+                print("   3. Asegurate de tener SUPABASE_SERVICE_KEY configurada")
+                print("\n[DEBUG] Variables actuales:")
+                print(f"   SUPABASE_REST_URL: {'Configurada' if supabase_rest_url else 'No configurada'}")
+                db_url_debug = get_env("SUPABASE_DB_URL")
+                print(f"   SUPABASE_DB_URL: {'Configurada' if db_url_debug else 'No configurada'}")
+                if db_url_debug:
+                    # Mostrar solo los primeros y últimos caracteres por seguridad
+                    masked = db_url_debug[:20] + "..." + db_url_debug[-20:] if len(db_url_debug) > 40 else db_url_debug
+                    print(f"      Valor: {masked}")
+                print(f"   SUPABASE_SERVICE_KEY: {'Configurada' if supabase_service_key else 'No configurada'}")
+                raise
+    return _supabase_client_cache
 
 # Configuración por defecto
 DEFAULT_DAYS = 7
@@ -67,7 +170,14 @@ def _normalize_distribution(distribution: Dict[str, float]) -> Dict[str, float]:
 
 
 def fetch_usage_events(days: int) -> List[dict]:
-    client = get_supabase_client()
+    try:
+        client = get_supabase_client_cached()
+    except Exception as e:
+        print(f"[ERROR] Error al conectar con Supabase: {e}")
+        print("\n[TIP] Asegurate de tener configuradas las variables de entorno:")
+        print("   - SUPABASE_REST_URL o SUPABASE_DB_URL")
+        print("   - SUPABASE_SERVICE_KEY")
+        raise
     end_date = datetime.now(timezone.utc)
     start_date = end_date - timedelta(days=days)
 
@@ -232,18 +342,47 @@ def main():
     parser.add_argument("--users", type=int, nargs="+", default=DEFAULT_USER_SCENARIOS, help="Cantidad de usuarios para escenarios (default: 100 1000)")
     args = parser.parse_args()
 
-    events = fetch_usage_events(args.days)
-    if not events:
-        print("No se encontraron eventos de uso en el período seleccionado.")
-        return
+    try:
+        print(f"[*] Generando reporte para los ultimos {args.days} dias...")
+        events = fetch_usage_events(args.days)
+        if not events:
+            print(f"[!] No se encontraron eventos de uso en los ultimos {args.days} dias.")
+            print("    Esto puede ser normal si el sistema esta recien iniciado.")
+            return
 
-    summary = build_usage_summary(events)
-    cost_summary = get_cost_summary_data(
-        (datetime.now() - timedelta(days=args.days)).strftime("%Y-%m-%d"),
-        datetime.now().strftime("%Y-%m-%d"),
-    )
-    projections = project_margins(summary.avg_cost_per_token, DEFAULT_PLAN_DISTRIBUTION, args.users)
-    print_report(summary, projections, cost_summary, args.days)
+        print(f"[OK] Encontrados {len(events)} eventos de uso")
+        summary = build_usage_summary(events)
+        
+        print("[*] Calculando resumen de costos...")
+        try:
+            cost_summary = get_cost_summary_data(
+                (datetime.now() - timedelta(days=args.days)).strftime("%Y-%m-%d"),
+                datetime.now().strftime("%Y-%m-%d"),
+            )
+        except Exception as e:
+            print(f"[!] Error al obtener resumen de costos: {e}")
+            print("    Continuando sin datos de ingresos de Stripe...")
+            cost_summary = {
+                "totals": {
+                    "revenue_usd": 0.0,
+                    "cost_estimated_usd": summary.total_cost_usd,
+                    "margin_usd": -summary.total_cost_usd,
+                    "margin_percent": 0.0
+                }
+            }
+        
+        print("[*] Generando proyecciones...")
+        projections = project_margins(summary.avg_cost_per_token, DEFAULT_PLAN_DISTRIBUTION, args.users)
+        print_report(summary, projections, cost_summary, args.days)
+        
+    except KeyboardInterrupt:
+        print("\n[!] Interrumpido por el usuario")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n[ERROR] Error inesperado: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
