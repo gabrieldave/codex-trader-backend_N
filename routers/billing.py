@@ -815,7 +815,7 @@ async def handle_invoice_paid(invoice: dict):
             # Verificar si ya se procesó esta recompensa (idempotencia)
             # IMPORTANTE: Manejar el caso cuando la tabla referral_reward_events no existe
             try:
-            reward_event_check = supabase_client.table("referral_reward_events").select("id").eq("invoice_id", invoice_id).execute()
+                reward_event_check = supabase_client.table("referral_reward_events").select("id").eq("invoice_id", invoice_id).execute()
                 already_processed = bool(reward_event_check.data)
             except Exception as table_error:
                 error_msg = str(table_error)
@@ -1050,10 +1050,10 @@ async def process_referrer_reward(user_id: str, referrer_id: str, invoice_id: st
         # Verificar idempotencia: esta invoice no debe haber sido procesada
         # IMPORTANTE: Manejar el caso cuando la tabla referral_reward_events no existe
         try:
-        reward_event_check = supabase_client.table("referral_reward_events").select("id").eq("invoice_id", invoice_id).execute()
-        if reward_event_check.data:
-            print(f"ℹ️ Recompensa para invoice {invoice_id} ya fue procesada (idempotencia)")
-            return
+            reward_event_check = supabase_client.table("referral_reward_events").select("id").eq("invoice_id", invoice_id).execute()
+            if reward_event_check.data:
+                print(f"ℹ️ Recompensa para invoice {invoice_id} ya fue procesada (idempotencia)")
+                return
         except Exception as table_error:
             error_msg = str(table_error)
             if "PGRST205" in error_msg or "table" in error_msg.lower() and "not found" in error_msg.lower():
@@ -1083,13 +1083,13 @@ async def process_referrer_reward(user_id: str, referrer_id: str, invoice_id: st
             # IMPORTANTE: Manejar el caso cuando la tabla referral_reward_events no existe
             event_registered = False
             try:
-            event_response = supabase_client.table("referral_reward_events").insert({
-                "invoice_id": invoice_id,
-                "user_id": user_id,
-                "referrer_id": referrer_id,
-                "reward_type": "first_payment",
-                "tokens_granted": reward_amount
-            }).execute()
+                event_response = supabase_client.table("referral_reward_events").insert({
+                    "invoice_id": invoice_id,
+                    "user_id": user_id,
+                    "referrer_id": referrer_id,
+                    "reward_type": "first_payment",
+                    "tokens_granted": reward_amount
+                }).execute()
                 event_registered = bool(event_response.data)
             except Exception as table_error:
                 error_msg = str(table_error)
