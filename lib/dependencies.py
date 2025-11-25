@@ -205,6 +205,14 @@ async def get_user(authorization: Optional[str] = Header(None)):
             status_code=401,
             detail=f"Token inválido o expirado. Por favor, inicia sesión nuevamente."
         )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ get_user: Error inesperado: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Error interno del servidor."
+        )
 
 
 def is_admin_user(user) -> bool:
