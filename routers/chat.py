@@ -13,6 +13,7 @@ from lib.rag_service import rag_service
 from lib.llm_service import llm_service
 from lib.vision_service import analyze_image
 from routers.models import QueryInput, CreateChatSessionInput
+from config import TOKEN_MULTIPLIER_DEEP_MODE, TOKEN_MULTIPLIER_IMAGE_ANALYSIS
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,11 @@ def persist_chat_background_task(
     """
     Guarda los mensajes y actualiza los tokens después de finalizar el streaming.
     Se ejecuta en background para no bloquear la respuesta al usuario.
+    
+    MULTIPLICADORES DE TOKENS:
+    - Modo Estudio Profundo: 1.5x (más contexto, respuestas elaboradas)
+    - Análisis de Imagen: 2.0x (costo Gemini + valor premium)
+    - Imagen + Profundo: 3.0x (1.5 * 2.0)
     """
     try:
         if stream_state.get("error"):
@@ -99,6 +105,38 @@ def persist_chat_background_task(
             input_tokens = len(prompt_text) // 4
             output_tokens = len(respuesta_texto) // 4
             total_tokens_usados = max(100 if respuesta_texto else 0, input_tokens + output_tokens)
+        
+        # =====================================================================
+        # APLICAR MULTIPLICADORES DE TOKENS (política de precios premium)
+        # =====================================================================
+        tokens_base = total_tokens_usados
+        multiplicador_total = 1.0
+        
+        # Verificar si es modo "Estudio Profundo"
+        is_deep_mode = response_mode and (
+            response_mode.lower() == 'deep' or 
+            response_mode.lower() == 'estudio profundo' or
+            response_mode.lower() == 'profundo'
+        )
+        
+        # Verificar si incluye análisis de imagen
+        has_image = query_payload.get("has_image", False)
+        
+        # Aplicar multiplicador por modo profundo
+        if is_deep_mode:
+            multiplicador_total *= TOKEN_MULTIPLIER_DEEP_MODE
+            logger.info(f"[BG] 📚 Modo Estudio Profundo: multiplicador {TOKEN_MULTIPLIER_DEEP_MODE}x aplicado")
+        
+        # Aplicar multiplicador por análisis de imagen
+        if has_image:
+            multiplicador_total *= TOKEN_MULTIPLIER_IMAGE_ANALYSIS
+            logger.info(f"[BG] 📸 Análisis de Imagen: multiplicador {TOKEN_MULTIPLIER_IMAGE_ANALYSIS}x aplicado")
+        
+        # Calcular tokens finales a descontar
+        total_tokens_usados = int(tokens_base * multiplicador_total)
+        
+        if multiplicador_total > 1.0:
+            logger.info(f"[BG] 💰 Tokens: {tokens_base} base × {multiplicador_total}x = {total_tokens_usados} tokens a descontar")
         
         # Usar token_service para descontar tokens y manejar uso justo
         nuevos_tokens = token_service.deduct_tokens(
@@ -690,9 +728,15 @@ async def chat_vision(
     """
     Endpoint para análisis multimodal de imágenes con RAG.
     
+    IMPORTANTE: El análisis de imágenes SIEMPRE usa modo "Estudio Profundo"
+    independientemente de la selección del usuario, ya que:
+    - Requiere llamada adicional a API de Gemini (doble costo)
+    - El análisis visual merece contexto RAG amplio (15 chunks)
+    - Garantiza mejor calidad de respuesta para análisis técnico
+    
     Flujo:
     1. Analiza la imagen con Gemini 1.5 Flash
-    2. Combina la descripción visual con la query para buscar en RAG
+    2. Combina la descripción visual con la query para buscar en RAG (15 chunks)
     3. Genera respuesta usando contexto RAG + análisis visual
     4. Descuenta tokens como "Estudio Profundo" (premium)
     5. Guarda el historial del chat
@@ -700,6 +744,10 @@ async def chat_vision(
     Requiere autenticación mediante token JWT de Supabase.
     """
     user_id = user.id
+    
+    # FORZAR modo "Estudio Profundo" para análisis de imágenes
+    # Razón: doble costo de API (Gemini + LLM) y mejor experiencia de usuario
+    response_mode = "Estudio Profundo"
     
     # Paso 1: Verificar saldo de tokens
     tokens_restantes = token_service.verify_token_balance(user_id)
@@ -726,11 +774,11 @@ async def chat_vision(
         citation_list = ""
         retrieved_chunks = []
         
-        # Realizar búsqueda RAG con la query combinada
+        # Realizar búsqueda RAG con la query combinada (15 chunks en modo profundo)
         context_text, citation_list, retrieved_chunks = await rag_service.perform_rag_search(
             query=query_combinada,
             category=None,
-            response_mode=response_mode or 'Estudio Profundo'
+            response_mode=response_mode  # Ya es "Estudio Profundo"
         )
         
         # Paso 3: Si no hay chunks, usar solo el análisis visual
@@ -760,8 +808,6 @@ async def chat_vision(
         contexto_completo += f"Análisis Visual de la Imagen:\n---\n{descripcion_visual}\n---\n"
         
         # Paso 5: Preparar estado del stream
-        # IMPORTANTE: Siempre usar "Estudio Profundo" para el cobro
-        response_mode_premium = "Estudio Profundo"
         # Incluir análisis visual en prompt_text para cálculo de tokens más preciso
         prompt_text_completo = f"{query}\n\n[Análisis visual incluido: {len(descripcion_visual)} caracteres]"
         stream_state = {
@@ -774,23 +820,22 @@ async def chat_vision(
             "conversation_id": conversation_id
         }
         
-        # Paso D: Generar stream de respuesta
+        # Paso D: Generar stream de respuesta (modo Estudio Profundo)
         async def stream_generator():
             async for chunk in llm_service.generate_stream(
                 query=query,
                 context=contexto_completo,
                 citation_list=citation_list,
                 is_greeting=False,
-                response_mode=response_mode or 'Estudio Profundo',
+                response_mode=response_mode,  # Ya es "Estudio Profundo"
                 stream_state=stream_state
             ):
                 yield chunk
         
         # Paso E: Programar tarea en background para guardar mensajes y descontar tokens
-        # IMPORTANTE: Siempre cobrar como "Estudio Profundo" debido al doble costo de API
         query_payload = {
             "query": query,
-            "response_mode": response_mode_premium,
+            "response_mode": response_mode,  # Ya es "Estudio Profundo" (forzado al inicio)
             "conversation_id": conversation_id,
             "has_image": True,
             "image_filename": file.filename
@@ -803,7 +848,7 @@ async def chat_vision(
             stream_state,
             tokens_restantes,
             llm_service.get_chat_model(),
-            response_mode_premium,  # Siempre cobrar como Estudio Profundo
+            response_mode,  # Ya es "Estudio Profundo"
             conversation_id
         )
         

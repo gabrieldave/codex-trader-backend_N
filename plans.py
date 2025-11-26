@@ -2,6 +2,14 @@
 Definición centralizada de planes de suscripción de Codex Trader.
 Este archivo mantiene la misma información que frontend/lib/plans.ts
 para garantizar consistencia entre frontend y backend.
+
+NOTA SOBRE CONSUMO DE TOKENS:
+- Consulta rápida: ~400 tokens (multiplicador 1.0x)
+- Análisis profundo (texto): ~1,800 tokens (multiplicador 1.5x)
+- Análisis profundo con imagen: ~7,500 tokens (multiplicador 3.0x)
+
+Los análisis con imágenes (gráficas) consumen aproximadamente 4x más tokens
+que los análisis de texto debido al procesamiento adicional con Gemini.
 """
 
 from typing import Literal, Optional
@@ -35,7 +43,7 @@ CODEX_PLANS: list[CodexPlan] = [
         full_description=(
             "Accede a hasta 17 análisis profundos al mes. Ideal para traders "
             "que analizan 3–4 oportunidades por semana y quieren validar sus "
-            "ideas con contenido profesional."
+            "ideas con contenido profesional. Nota: análisis con imagen consumen ~4x más tokens."
         )
     ),
     CodexPlan(

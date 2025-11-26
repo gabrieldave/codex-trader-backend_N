@@ -63,6 +63,23 @@ MODEL_TEMPERATURE = 0.7
 INITIAL_TOKENS = 15000
 
 # ============================================================================
+# MULTIPLICADORES DE TOKENS (para cobro premium)
+# ============================================================================
+# Estos multiplicadores se aplican al cobrar tokens al usuario para garantizar
+# rentabilidad y reflejar el valor real del servicio
+
+# Multiplicador para modo "Estudio Profundo" (1.5x = 50% extra)
+# Razón: más contexto RAG (15 chunks vs 5), respuestas más elaboradas
+TOKEN_MULTIPLIER_DEEP_MODE = 1.5
+
+# Multiplicador para análisis de imágenes (2x = 100% extra)
+# Razón: costo adicional de API Gemini + valor premium del servicio visual
+TOKEN_MULTIPLIER_IMAGE_ANALYSIS = 2.0
+
+# Nota: Cuando se sube una imagen, se aplican AMBOS multiplicadores
+# Imagen + Estudio Profundo = 1.5 * 2.0 = 3x los tokens base
+
+# ============================================================================
 # CONFIGURACIÓN DE COSTOS DE MODELOS DE IA (USD por millón de tokens)
 # ============================================================================
 # Estos valores se usan para calcular el costo estimado de cada llamada
