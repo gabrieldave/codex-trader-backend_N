@@ -72,3 +72,6 @@ Después de reiniciar, intenta iniciar sesión desde el frontend. Si el problema
 
 **NO** uses `SUPABASE_DB_URL` para la autenticación. El backend necesita `SUPABASE_REST_URL` directamente configurada. Si solo tienes `SUPABASE_DB_URL`, el backend intentará derivar la URL REST, pero esto puede fallar si la URL de Postgres está mal formateada.
 
+
+
+

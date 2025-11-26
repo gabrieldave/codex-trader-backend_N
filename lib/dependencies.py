@@ -4,7 +4,6 @@ Contiene funciones de autenticación y utilidades comunes.
 """
 import os
 import logging
-import asyncio
 from typing import Optional
 from fastapi import HTTPException, Header
 from supabase import create_client
@@ -112,53 +111,19 @@ async def get_user(authorization: Optional[str] = Header(None)):
                 detail="Error de configuración del servidor. Contacta al administrador."
             )
         
-        # Reintentos para errores de DNS/conexión temporales
-        max_retries = 3
-        retry_delay = 0.5  # segundos
-        last_error = None
-        
-        for attempt in range(max_retries):
-            try:
-                user_response = supabase_client.auth.get_user(token)
-                if not user_response.user:
-                    logger.warning("⚠️ get_user: user_response.user es None")
-                    raise HTTPException(
-                        status_code=401,
-                        detail="Token inválido o expirado"
-                    )
-                logger.debug(f"✅ get_user: Usuario validado: {user_response.user.email}")
-                return user_response.user
-            except HTTPException:
-                raise
-            except Exception as e:
-                error_msg = str(e)
-                last_error = e
-                
-                # Errores de DNS/conexión que pueden ser temporales
-                dns_errors = [
-                    "name resolution",
-                    "Name or service not known",
-                    "getaddrinfo failed",
-                    "Temporary failure",
-                    "Connection refused",
-                    "Network is unreachable",
-                    "Failed to resolve",
-                    "ETIMEDOUT",
-                    "ECONNREFUSED"
-                ]
-                
-                is_dns_error = any(keyword.lower() in error_msg.lower() for keyword in dns_errors)
-                
-                if is_dns_error and attempt < max_retries - 1:
-                    logger.warning(f"⚠️ get_user: Error de DNS/conexión (intento {attempt + 1}/{max_retries}): {error_msg[:80]}")
-                    await asyncio.sleep(retry_delay * (attempt + 1))  # Backoff exponencial
-                    continue
-                else:
-                    break
-        
-        # Si llegamos aquí, todos los reintentos fallaron
-        error_msg = str(last_error) if last_error else "Error desconocido"
-        
+        user_response = supabase_client.auth.get_user(token)
+        if not user_response.user:
+            logger.warning("⚠️ get_user: user_response.user es None")
+            raise HTTPException(
+                status_code=401,
+                detail="Token inválido o expirado"
+            )
+        logger.debug(f"✅ get_user: Usuario validado: {user_response.user.email}")
+        return user_response.user
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e)
         # Errores comunes que son esperados (token expirado, sesión inválida, etc.)
         expected_errors = [
             "Session from session_id claim in JWT does not exist",
@@ -171,26 +136,23 @@ async def get_user(authorization: Optional[str] = Header(None)):
         is_expected_error = any(expected in error_msg for expected in expected_errors)
         
         # Errores de conexión/DNS (críticos)
-        connection_keywords = [
-            "name resolution",
+        is_connection_error = any(keyword in error_msg for keyword in [
             "Name or service not known",
             "getaddrinfo failed",
             "Connection refused",
             "Network is unreachable",
-            "Failed to resolve",
-            "Temporary failure",
-            "ETIMEDOUT",
-            "ECONNREFUSED"
-        ]
-        is_connection_error = any(keyword.lower() in error_msg.lower() for keyword in connection_keywords)
+            "Failed to resolve"
+        ])
         
         if is_connection_error:
-            logger.error(f"❌ get_user: ERROR DE CONEXIÓN con Supabase después de {max_retries} intentos: {error_msg}")
+            logger.error(f"❌ get_user: ERROR DE CONEXIÓN con Supabase: {error_msg}")
             logger.error(f"   URL configurada: {SUPABASE_REST_URL[:60] if SUPABASE_REST_URL else 'No configurada'}...")
-            logger.error(f"   Esto indica un problema de red/DNS en Railway. El servicio se recuperará automáticamente.")
+            logger.error(f"   Esto indica un problema de red o configuración. Verifica:")
+            logger.error(f"   1. Que SUPABASE_REST_URL esté correctamente configurada en Railway")
+            logger.error(f"   2. Que la URL sea accesible desde Railway")
             raise HTTPException(
                 status_code=503,
-                detail="Servicio temporalmente no disponible. Intenta de nuevo en unos segundos."
+                detail="Servicio temporalmente no disponible. Error de conexión con la base de datos."
             )
         elif is_expected_error:
             # Log como warning en lugar de error, ya que es un caso esperado
@@ -204,14 +166,6 @@ async def get_user(authorization: Optional[str] = Header(None)):
         raise HTTPException(
             status_code=401,
             detail=f"Token inválido o expirado. Por favor, inicia sesión nuevamente."
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ get_user: Error inesperado: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="Error interno del servidor."
         )
 
 

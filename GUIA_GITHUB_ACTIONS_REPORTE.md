@@ -87,3 +87,6 @@ Si el workflow falla:
 2. Verifica que los secrets estén configurados correctamente
 3. Asegúrate de que las dependencias en `requirements.txt` estén actualizadas
 
+
+
+
