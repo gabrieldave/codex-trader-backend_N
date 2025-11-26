@@ -42,6 +42,3 @@ class NotifyRegistrationInput(BaseModel):
     force_resend: Optional[bool] = False  # Forzar reenvío incluso si ya se envió antes
 
 
-class ProcessReferralInput(BaseModel):
-    referral_code: str
-

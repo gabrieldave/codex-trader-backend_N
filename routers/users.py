@@ -1,5 +1,5 @@
 """
-Router para endpoints de usuarios, tokens, uso y referidos.
+Router para endpoints de usuarios, tokens y uso.
 """
 import os
 import logging
@@ -11,7 +11,7 @@ from datetime import datetime
 from lib.dependencies import get_user
 from lib.dependencies import supabase_client
 from lib.config_shared import FRONTEND_URL
-from routers.models import TokenReloadInput, NotifyRegistrationInput, ProcessReferralInput
+from routers.models import TokenReloadInput, NotifyRegistrationInput
 
 logger = logging.getLogger(__name__)
 
@@ -603,56 +603,19 @@ async def notify_user_registration(
                     "already_sent": True
                 }
         
-        # Importar constantes de negocio y helpers de referidos
+        # Importar constantes de negocio
         from lib.business import (
             INITIAL_FREE_TOKENS,
-            REF_INVITED_BONUS_TOKENS,
-            REF_REFERRER_BONUS_TOKENS,
-            REF_MAX_REWARDS,
             APP_NAME
         )
-        from lib.referrals import assign_referral_code_if_needed, build_referral_url
-        
-        # IMPORTANTE: Asignar referral_code ANTES de obtener el perfil y enviar emails
-        logger.info(f"[REFERRALS] Verificando/asignando referral_code para usuario {user_id}...")
-        referral_code = assign_referral_code_if_needed(supabase_client, user_id)
-        
-        if not referral_code:
-            logger.error(f"[REFERRALS] ERROR: No se pudo asignar referral_code al usuario {user_id}")
-            # Intentar obtener el código del perfil como fallback
-            try:
-                profile_check = supabase_client.table("profiles").select("referral_code").eq("id", user_id).execute()
-                if profile_check.data and profile_check.data[0].get("referral_code"):
-                    referral_code = profile_check.data[0]["referral_code"]
-                    logger.info(f"[REFERRALS] Código encontrado en perfil: {referral_code}")
-                else:
-                    referral_code = "No disponible"
-                    logger.warning(f"[REFERRALS] Usuario {user_id} no tiene referral_code y no se pudo generar")
-            except Exception as e:
-                logger.error(f"[REFERRALS] Error al verificar código en perfil: {e}")
-                referral_code = "No disponible"
-        
-        # Construir referral_url usando FRONTEND_URL
-        referral_url = build_referral_url(referral_code)
-        logger.info(f"[REFERRALS] Referral URL construida: {referral_url}")
-        
         # Obtener información del perfil del usuario
-        # Intentar obtener todas las columnas disponibles, manejando errores si alguna no existe
         try:
-            # Primero intentar obtener todas las columnas (incluyendo referral_code si existe)
             profile_response = supabase_client.table("profiles").select(
-                "referral_code, referred_by_user_id, current_plan, created_at, tokens_restantes, welcome_email_sent"
+                "current_plan, created_at, tokens_restantes, welcome_email_sent"
             ).eq("id", user_id).execute()
         except Exception as e:
-            # Si falla porque referral_code no existe, intentar sin esa columna
-            logger.warning(f"[WARNING] Error al obtener perfil con referral_code, intentando sin esa columna: {e}")
-            try:
-                profile_response = supabase_client.table("profiles").select(
-                    "referred_by_user_id, current_plan, created_at, tokens_restantes"
-                ).eq("id", user_id).execute()
-            except Exception as e2:
-                logger.error(f"[ERROR] Error al obtener perfil: {e2}")
-                profile_response = None
+            logger.error(f"[ERROR] Error al obtener perfil: {e}")
+            profile_response = None
         
         if not profile_response or not profile_response.data:
             # Si no hay perfil, el usuario acaba de registrarse
@@ -698,36 +661,11 @@ async def notify_user_registration(
                     "already_sent": True
                 }
         
-        # Asegurar que tenemos el referral_code (usar el que acabamos de asignar o el del perfil)
-        if not referral_code or referral_code == "No disponible":
-            referral_code = profile_data.get("referral_code") or referral_code or "No disponible"
-        
-        # Si aún no hay código, intentar asignarlo una vez más
-        if not referral_code or referral_code == "No disponible":
-            logger.warning(f"[REFERRALS] Reintentando asignar código...")
-            referral_code = assign_referral_code_if_needed(supabase_client, user_id)
-            if referral_code:
-                referral_url = build_referral_url(referral_code)
-                logger.info(f"[REFERRALS] Código asignado en segundo intento: {referral_code}")
-        
-        referred_by_id = profile_data.get("referred_by_user_id")
         current_plan = profile_data.get("current_plan")
         if not current_plan:
             current_plan = "Sin plan (modo prueba)"
         created_at = profile_data.get("created_at")
         initial_tokens = profile_data.get("tokens_restantes", INITIAL_FREE_TOKENS)
-        
-        # Obtener información del referrer si existe
-        referrer_info = "No aplica"
-        if referred_by_id:
-            try:
-                referrer_response = supabase_client.table("profiles").select("email").eq("id", referred_by_id).execute()
-                if referrer_response.data:
-                    referrer_info = f"{referrer_response.data[0].get('email', 'N/A')} (ID: {referred_by_id})"
-                else:
-                    referrer_info = f"ID: {referred_by_id}"
-            except Exception:
-                referrer_info = f"ID: {referred_by_id}"
         
         # IMPORTANTE: Enviar email de notificación al admin
         # Esto se hace en segundo plano y no bloquea la respuesta
@@ -780,23 +718,9 @@ async def notify_user_registration(
                                 <strong style="color: #2563eb;">Plan actual:</strong> 
                                 <span style="color: #333;">{current_plan}</span>
                             </li>
-                            <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
+                            <li style="margin-bottom: 0;">
                                 <strong style="color: #2563eb;">Tokens iniciales asignados:</strong> 
                                 <span style="color: #333;">{INITIAL_FREE_TOKENS:,} tokens</span>
-                            </li>
-                            <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
-                                <strong style="color: #2563eb;">Código de referido:</strong> 
-                                <span style="color: #333; font-family: monospace; font-weight: bold;">{referral_code if referral_code and referral_code != "No disponible" else "No disponible (error al generar)"}</span>
-                            </li>
-                            <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;">
-                                <strong style="color: #2563eb;">Enlace de invitación:</strong> 
-                                <span style="color: #333; font-size: 12px; word-break: break-all;">
-                                    <a href="{referral_url}" style="color: #2563eb; text-decoration: none;">{referral_url}</a>
-                                </span>
-                            </li>
-                            <li style="margin-bottom: 0;">
-                                <strong style="color: #2563eb;">Registrado por referido:</strong> 
-                                <span style="color: #333;">{referrer_info}</span>
                             </li>
                         </ul>
                     </div>
@@ -830,9 +754,7 @@ async def notify_user_registration(
             
             # Construir enlaces usando FRONTEND_URL (normalizar sin barra final)
             base_url = (FRONTEND_URL or os.getenv("FRONTEND_URL", "https://www.codextrader.tech")).rstrip('/')
-            # Usar build_referral_url para consistencia (usa /?ref= en lugar de /registro?ref=)
-            referral_url = build_referral_url(referral_code)
-            app_url = base_url  # Usar la raíz del sitio, no /app
+            app_url = base_url  # Usar la raíz del sitio
             
             # Obtener nombre del usuario desde el email (parte antes del @)
             user_name = user_email.split('@')[0] if '@' in user_email else 'usuario'
@@ -947,30 +869,6 @@ async def notify_user_registration(
                         <p style="margin: 15px 0 0 0; font-size: 12px; color: #6b7280; font-style: italic;">
                             💡 Tip: Este enlace abrirá en la misma pestaña donde confirmaste tu email
                         </p>
-                    </div>
-                    
-                    <!-- Bloque: Invita a tus amigos y gana tokens -->
-                    <div style="background: #fef3c7; padding: 20px; border-radius: 8px; margin: 30px 0; border-left: 4px solid #f59e0b;">
-                        <h3 style="color: #92400e; margin-top: 0; font-size: 18px;">💎 Invita a tus amigos y gana tokens</h3>
-                        <p style="margin-bottom: 15px; color: #78350f;">
-                            Comparte tu enlace personal y ambos ganan:
-                        </p>
-                        <ul style="margin: 15px 0; padding-left: 20px; color: #78350f;">
-                            <li style="margin-bottom: 10px;">
-                                Tu amigo recibe <strong>+{REF_INVITED_BONUS_TOKENS:,} tokens de bienvenida</strong> cuando activa su primer plan de pago.
-                            </li>
-                            <li style="margin-bottom: 15px;">
-                                Tú ganas <strong>+{REF_REFERRER_BONUS_TOKENS:,} tokens</strong> por cada amigo que pague su primer plan (hasta {REF_MAX_REWARDS} referidos con recompensa completa).
-                            </li>
-                        </ul>
-                        <div style="background: white; padding: 15px; border-radius: 6px; margin: 15px 0; border: 2px dashed #d97706;">
-                            <p style="margin: 5px 0; font-size: 14px; color: #666;"><strong>Tu código de referido:</strong></p>
-                            <p style="margin: 5px 0; font-size: 18px; font-weight: bold; color: #2563eb; word-break: break-all; font-family: monospace;">{referral_code if referral_code and referral_code != "No disponible" else "Se generará en unos minutos"}</p>
-                            <p style="margin: 10px 0 5px 0; font-size: 14px; color: #666;"><strong>Tu enlace de invitación:</strong></p>
-                            <p style="margin: 5px 0; font-size: 14px; color: #2563eb; word-break: break-all;">
-                                <a href="{referral_url}" style="color: #2563eb; text-decoration: none;">{referral_url}</a>
-                            </p>
-                        </div>
                     </div>
                     
                     <!-- Bloque final: Disclaimer -->
@@ -1090,248 +988,5 @@ async def notify_user_registration(
         }
 
 
-@users_router.get("/me/referrals-summary")
-async def get_referrals_summary(user = Depends(get_user)):
-    """
-    Obtiene un resumen de estadísticas de referidos del usuario actual.
-    
-    Retorna:
-    - totalInvited: Total de usuarios que se registraron con el código de referido
-    - totalPaid: Total de usuarios que pagaron su primera suscripción
-    - referralRewardsCount: Cantidad de referidos que ya generaron recompensa (máximo 5)
-    - referralTokensEarned: Tokens totales ganados por referidos
-    - referralCode: Código de referido del usuario
-    """
-    try:
-        user_id = user.id
-        
-        # Obtener información del perfil del usuario
-        profile_response = supabase_client.table("profiles").select(
-            "referral_code, referral_rewards_count, referral_tokens_earned"
-        ).eq("id", user_id).execute()
-        
-        if not profile_response.data:
-            raise HTTPException(
-                status_code=404,
-                detail="Perfil de usuario no encontrado"
-            )
-        
-        profile = profile_response.data[0]
-        referral_code = profile.get("referral_code")
-        referral_rewards_count = profile.get("referral_rewards_count", 0)
-        referral_tokens_earned = profile.get("referral_tokens_earned", 0)
-        
-        # Contar total de usuarios que se registraron con este código de referido
-        total_invited_response = supabase_client.table("profiles").select(
-            "id"
-        ).eq("referred_by_user_id", user_id).execute()
-        
-        total_invited = len(total_invited_response.data) if total_invited_response.data else 0
-        
-        # Contar usuarios que ya pagaron (tienen has_generated_referral_reward = true)
-        total_paid_response = supabase_client.table("profiles").select(
-            "id"
-        ).eq("referred_by_user_id", user_id).eq("has_generated_referral_reward", True).execute()
-        
-        total_paid = len(total_paid_response.data) if total_paid_response.data else 0
-        
-        return {
-            "totalInvited": total_invited,
-            "totalPaid": total_paid,
-            "referralRewardsCount": referral_rewards_count,
-            "referralTokensEarned": referral_tokens_earned,
-            "referralCode": referral_code
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error al obtener resumen de referidos: {str(e)}"
-        )
 
-
-@users_router.post("/referrals/process")
-async def process_referral(
-    referral_input: ProcessReferralInput,
-    user = Depends(get_user)
-):
-    """
-    Procesa un código de referido después del registro de un usuario.
-    
-    Este endpoint debe llamarse después de que un usuario se registra con un código
-    de referido (por ejemplo, desde ?ref=XXXX en la URL de registro).
-    
-    Recibe:
-    - referral_code: Código de referido del usuario que invitó
-    
-    Actualiza:
-    - referred_by_user_id: ID del usuario que invitó
-    
-    Retorna:
-    - success: True si se procesó correctamente
-    - message: Mensaje descriptivo
-    """
-    try:
-        user_id = user.id
-        referral_code = referral_input.referral_code.strip().upper()
-        
-        if not referral_code:
-            raise HTTPException(
-                status_code=400,
-                detail="El código de referido no puede estar vacío"
-            )
-        
-        # OPTIMIZACIÓN: Obtener toda la información necesaria en una sola consulta
-        profile_response = supabase_client.table("profiles").select(
-            "referred_by_user_id, referral_code, tokens_restantes"
-        ).eq("id", user_id).execute()
-        
-        if not profile_response.data:
-            raise HTTPException(
-                status_code=404,
-                detail="Perfil de usuario no encontrado"
-            )
-        
-        profile = profile_response.data[0]
-        existing_referrer = profile.get("referred_by_user_id")
-        if existing_referrer:
-            # Usuario ya tiene un referido asignado (ya usó un código antes)
-            raise HTTPException(
-                status_code=400,
-                detail="Este usuario ya tiene un código de referido asignado. Solo puedes usar un código de referido al registrarte."
-            )
-        
-        # Verificar que el usuario no se esté refiriendo a sí mismo
-        user_referral_code = profile.get("referral_code")
-        if user_referral_code == referral_code:
-            raise HTTPException(
-                status_code=400,
-                detail="No puedes usar tu propio código de referido"
-            )
-        
-        # Buscar al usuario que tiene ese código de referido
-        referrer_response = supabase_client.table("profiles").select("id, email, referral_code").eq("referral_code", referral_code).execute()
-        
-        if not referrer_response.data:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Código de referido inválido: {referral_code}"
-            )
-        
-        referrer_id = referrer_response.data[0]["id"]
-        
-        # OPTIMIZACIÓN: Calcular tokens directamente sin consulta adicional
-        welcome_bonus = 5000
-        current_tokens = profile.get("tokens_restantes", 0) or 0
-        new_tokens = current_tokens + welcome_bonus
-        
-        # Actualizar perfil y tokens en una sola operación
-        update_response = supabase_client.table("profiles").update({
-            "referred_by_user_id": referrer_id,
-            "tokens_restantes": new_tokens
-        }).eq("id", user_id).execute()
-        
-        if update_response.data:
-            # IMPORTANTE: Enviar email de notificación al admin sobre nuevo registro
-            # Esto se hace en segundo plano y no bloquea la respuesta
-            try:
-                from lib.email import send_admin_email
-                import threading
-                
-                # Obtener información del usuario y referrer para el email
-                user_email = user.email
-                referrer_email = referrer_response.data[0].get('email', 'N/A')
-                
-                html_content = f"""
-                <html>
-                <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                    <h2 style="color: #2563eb;">Nuevo registro en Codex Trader</h2>
-                    <p>Se ha registrado un nuevo usuario en Codex Trader.</p>
-                    <ul>
-                        <li><strong>Email:</strong> {user_email}</li>
-                        <li><strong>Fecha de registro:</strong> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</li>
-                        <li><strong>Registrado por referido:</strong> {referrer_email} (ID: {referrer_id})</li>
-                        <li><strong>Código de referido usado:</strong> {referral_code}</li>
-                    </ul>
-                </body>
-                </html>
-                """
-                
-                # Enviar email en segundo plano (no bloquea)
-                def send_email_background():
-                    try:
-                        send_admin_email("Nuevo registro en Codex Trader", html_content)
-                    except Exception as e:
-                        print(f"WARNING: Error al enviar email en background: {e}")
-                
-                email_thread = threading.Thread(target=send_email_background, daemon=True)
-                email_thread.start()
-            except Exception as email_error:
-                # No es crítico si falla el email
-                print(f"WARNING: No se pudo enviar email de notificación de registro: {email_error}")
-            
-            # Retornar respuesta inmediatamente sin esperar emails
-            return {
-                "success": True,
-                "message": f"Referido procesado correctamente. Fuiste referido por {referrer_response.data[0].get('email', 'usuario')}. ¡Recibiste {welcome_bonus:,} tokens de bienvenida!",
-                "referrer_id": referrer_id,
-                "welcome_bonus": welcome_bonus
-            }
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail="Error al actualizar el perfil con el referido"
-            )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error al procesar referido: {str(e)}"
-        )
-
-
-@users_router.get("/referrals/info")
-async def get_referral_info(user = Depends(get_user)):
-    """
-    Obtiene información sobre el sistema de referidos del usuario actual.
-    
-    Retorna:
-    - referral_code: Código de referido del usuario
-    - referred_by_user_id: ID del usuario que lo invitó (si aplica)
-    - referral_rewards_count: Cantidad de referidos que han generado recompensa
-    - referral_tokens_earned: Tokens totales obtenidos por referidos
-    """
-    try:
-        user_id = user.id
-        
-        profile_response = supabase_client.table("profiles").select(
-            "referral_code, referred_by_user_id, referral_rewards_count, referral_tokens_earned"
-        ).eq("id", user_id).execute()
-        
-        if not profile_response.data:
-            raise HTTPException(
-                status_code=404,
-                detail="Perfil de usuario no encontrado"
-            )
-        
-        profile = profile_response.data[0]
-        
-        return {
-            "referral_code": profile.get("referral_code"),
-            "referred_by_user_id": profile.get("referred_by_user_id"),
-            "referral_rewards_count": profile.get("referral_rewards_count", 0),
-            "referral_tokens_earned": profile.get("referral_tokens_earned", 0)
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error al obtener información de referidos: {str(e)}"
-        )
-
+# Sistema de referidos eliminado
