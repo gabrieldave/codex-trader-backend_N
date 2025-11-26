@@ -28,7 +28,7 @@ async def debug_tokens(user = Depends(get_user)) -> Dict[str, Any]:
         # Obtener perfil completo
         try:
             profile_response = supabase_client.table("profiles").select(
-                "id, email, tokens_restantes, current_plan, referral_code, created_at"
+                "id, email, tokens_restantes, current_plan, created_at"
             ).eq("id", user_id).execute()
             
             if not profile_response.data:
@@ -48,7 +48,6 @@ async def debug_tokens(user = Depends(get_user)) -> Dict[str, Any]:
                 "user_email": user_email,
                 "tokens_restantes": profile.get("tokens_restantes", 0),
                 "current_plan": profile.get("current_plan", "N/A"),
-                "referral_code": profile.get("referral_code", "N/A"),
                 "created_at": profile.get("created_at", "N/A"),
                 "message": f"✅ Tokens obtenidos: {profile.get('tokens_restantes', 0):,}"
             }
