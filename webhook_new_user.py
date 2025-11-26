@@ -51,32 +51,29 @@ def create_webhook_endpoint(app, supabase_client):
                 # Obtener información del perfil
                 try:
                     profile_response = supabase_client.table("profiles").select(
-                        "referral_code, referred_by_user_id, current_plan, created_at, tokens_restantes"
+                        "current_plan, created_at, tokens_restantes"
                     ).eq("id", user_id).execute()
                     
                     if profile_response.data:
                         profile_data = profile_response.data[0]
-                        referral_code = profile_data.get("referral_code", "Generándose...")
                         initial_tokens = profile_data.get("tokens_restantes", 0)
                     else:
-                        referral_code = "Generándose..."
                         initial_tokens = 0
                 except Exception as e:
                     print(f"[WEBHOOK] Error al obtener perfil: {e}")
-                    referral_code = "Generándose..."
                     initial_tokens = 0
                 
                 # Enviar email al admin
                 admin_html = f"""
                 <html>
                 <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                    <h2 style="color: #2563eb;">Nuevo registro en Codex Trader (Webhook)</h2>
+                    <h2 style="color: #2563eb;">Nuevo registro en Codex Trader</h2>
                     <p>Se ha registrado un nuevo usuario en Codex Trader.</p>
                     <ul>
                         <li><strong>Email:</strong> {user_email}</li>
                         <li><strong>ID de usuario:</strong> {user_id}</li>
                         <li><strong>Fecha de registro:</strong> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}</li>
-                        <li><strong>Código de referido:</strong> {referral_code}</li>
+                        <li><strong>Tokens iniciales:</strong> {initial_tokens:,}</li>
                     </ul>
                 </body>
                 </html>
@@ -88,7 +85,6 @@ def create_webhook_endpoint(app, supabase_client):
                 # Enviar email de bienvenida al usuario
                 user_name = user_email.split('@')[0] if '@' in user_email else 'usuario'
                 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
-                referral_url = f"{FRONTEND_URL}/registro?ref={referral_code}"
                 app_url = f"{FRONTEND_URL}/app"
                 
                 welcome_html = f"""
