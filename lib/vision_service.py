@@ -41,72 +41,87 @@ def _analyze_image_sync(image_bytes: bytes) -> str:
     # Configurar el cliente de Google Generative AI
     genai.configure(api_key=GOOGLE_API_KEY)
     
-    # IMPORTANTE: Orden de fallback basado en COSTO (más barato primero)
+    # IMPORTANTE: PRIMERO listar modelos disponibles, luego usar los que realmente existen
+    # Orden de fallback basado en COSTO (más barato primero)
     # Gemini Flash: $0.075/$0.30 (más barato)
     # Gemini Pro: $0.50/$1.50 (más caro)
-    # 
-    # Lista ordenada por costo de menor a mayor:
-    FALLBACK_MODELS_BY_COST = [
-        # 1. Modelos Flash (más baratos) - ordenados por versión más barata primero
-        "gemini-1.5-flash-latest",    # Configurado (más barato)
-        "gemini-1.5-flash",           # Flash sin -latest
-        # 2. Modelos Pro (más caros) - solo como último recurso
-        "gemini-1.5-pro",
-        "gemini-pro-vision",
-        "gemini-pro"
-    ]
     
     model = None
-    model_name_used = None  # Guardar el nombre del modelo que se está usando
+    model_name_used = None
     last_error = None
     models_tried = []
     
-    # Construir lista de modelos a intentar en orden de costo
-    # 1. Primero el modelo configurado
-    models_to_try = [VISION_MODEL]
+    # PRIMERO: Obtener lista de modelos disponibles
+    logger.info("Obteniendo lista de modelos disponibles de Gemini...")
+    available_models = _get_available_models()
     
-    # 2. Luego agregar otros modelos baratos en orden de costo
-    for fallback_model in FALLBACK_MODELS_BY_COST:
-        if fallback_model not in models_to_try:  # Evitar duplicados
-            models_to_try.append(fallback_model)
-    
-    # Intentar cada modelo en orden de costo (más barato primero)
-    for model_name in models_to_try:
-        try:
-            model = genai.GenerativeModel(model_name)
-            model_name_used = model_name  # Guardar el nombre del modelo usado
-            if model_name == VISION_MODEL:
-                logger.info(f"✅ Usando modelo configurado: {model_name} (más barato)")
-            else:
-                logger.info(f"⚠️ Usando modelo alternativo (fallback por costo): {model_name}")
-            break
-        except Exception as e:
-            last_error = e
-            models_tried.append(model_name)
-            logger.warning(f"Modelo {model_name} no disponible: {e}")
-            continue
-    
-    # Si ninguno funcionó y podemos listar modelos disponibles, intentar otros modelos Flash
-    if model is None:
-        logger.info("Buscando otros modelos Flash disponibles (más baratos)...")
-        available_models = _get_available_models()
+    if available_models:
+        logger.info(f"Modelos disponibles: {', '.join(available_models[:5])}...")
         
-        if available_models:
-            logger.info(f"Modelos disponibles: {', '.join(available_models[:5])}...")
-            # Buscar modelos Flash que no hayamos intentado aún (más baratos)
-            for available_model in available_models:
-                # Priorizar modelos Flash (más baratos) que no hayamos intentado
-                if 'flash' in available_model.lower() and available_model not in models_tried:
-                    try:
-                        model = genai.GenerativeModel(available_model)
-                        model_name_used = available_model  # Guardar el nombre del modelo usado
-                        logger.info(f"⚠️ Usando modelo Flash disponible: {available_model}")
-                        break
-                    except Exception as e:
-                        last_error = e
-                        models_tried.append(available_model)
-                        logger.warning(f"Modelo {available_model} no disponible: {e}")
-                        continue
+        # Construir lista de modelos a intentar en orden de costo (más barato primero)
+        models_to_try = []
+        
+        # 1. Primero intentar el modelo configurado si está disponible
+        if VISION_MODEL in available_models:
+            models_to_try.append(VISION_MODEL)
+            logger.info(f"✅ Modelo configurado disponible: {VISION_MODEL}")
+        
+        # 2. Luego agregar todos los modelos Flash disponibles (más baratos)
+        flash_models = [m for m in available_models if 'flash' in m.lower()]
+        # Ordenar Flash por versión (2.5, 2.0, 1.5) - más reciente primero suele ser más barato
+        flash_models.sort(key=lambda x: (
+            '2.5' in x, '2.0' in x, '1.5' in x,
+            x.count('-'),  # Menos guiones = más simple = usualmente más barato
+        ), reverse=True)
+        for flash_model in flash_models:
+            if flash_model not in models_to_try:
+                models_to_try.append(flash_model)
+        
+        # 3. Finalmente agregar modelos Pro disponibles (más caros, solo como último recurso)
+        pro_models = [m for m in available_models if 'pro' in m.lower() and 'flash' not in m.lower()]
+        for pro_model in pro_models:
+            if pro_model not in models_to_try:
+                models_to_try.append(pro_model)
+        
+        # Intentar cada modelo en orden de costo (más barato primero)
+        for model_name in models_to_try:
+            try:
+                model = genai.GenerativeModel(model_name)
+                model_name_used = model_name
+                if model_name == VISION_MODEL:
+                    logger.info(f"✅ Usando modelo configurado: {model_name} (más barato)")
+                else:
+                    logger.info(f"⚠️ Usando modelo disponible (por costo): {model_name}")
+                break
+            except Exception as e:
+                last_error = e
+                models_tried.append(model_name)
+                logger.warning(f"Modelo {model_name} no disponible: {e}")
+                continue
+    else:
+        # Si no podemos listar modelos, intentar modelos conocidos como fallback
+        logger.warning("No se pudieron listar modelos, usando lista por defecto")
+        fallback_models = [
+            "gemini-2.5-flash",  # Modelo que estaba funcionando
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            VISION_MODEL,
+            "gemini-1.5-pro",
+            "gemini-pro-vision",
+            "gemini-pro"
+        ]
+        
+        for model_name in fallback_models:
+            try:
+                model = genai.GenerativeModel(model_name)
+                model_name_used = model_name
+                logger.info(f"✅ Modelo {model_name} inicializado correctamente")
+                break
+            except Exception as e:
+                last_error = e
+                models_tried.append(model_name)
+                logger.warning(f"Modelo {model_name} no disponible: {e}")
+                continue
     
     if model is None:
         error_msg = (
@@ -129,7 +144,7 @@ def _analyze_image_sync(image_bytes: bytes) -> str:
     # Prompt del sistema para análisis técnico de trading
     system_prompt = """Actúa como un experto analista técnico de trading institucional. Analiza esta imagen detalladamente. Identifica: 1) El activo y la temporalidad (si son visibles), 2) La tendencia principal, 3) Patrones de velas o figuras chartistas clave, 4) Niveles de soporte y resistencia visibles, 5) Lectura de indicadores (si los hay). Sé técnico, preciso y conciso."""
     
-    # Generar el análisis - si falla, intentar con otros modelos
+    # Generar el análisis - si falla, intentar con otros modelos disponibles
     response = None
     last_error = None
     
@@ -138,28 +153,24 @@ def _analyze_image_sync(image_bytes: bytes) -> str:
             response = model.generate_content([system_prompt, image])
         except Exception as e:
             last_error = e
-            logger.warning(f"Error con modelo {VISION_MODEL}: {e}")
-            # Intentar con modelos alternativos como último recurso
-            # Seguir el orden de costo (más barato primero)
-            # El modelo actual ya falló, intentar otros en orden de costo
-            
-            # Lista de modelos alternativos en orden de costo (más barato primero)
-            alternative_models = FALLBACK_MODELS_BY_COST.copy()
-            # Remover el modelo actual de la lista (ya lo intentamos)
-            if model_name_used:
-                alternative_models = [m for m in alternative_models if m != model_name_used]
-            
-            for alt_model_name in alternative_models:
-                try:
-                    logger.info(f"⚠️ Intentando modelo alternativo (por costo): {alt_model_name}")
-                    alt_model = genai.GenerativeModel(alt_model_name)
-                    response = alt_model.generate_content([system_prompt, image])
-                    logger.info(f"✅ Modelo alternativo {alt_model_name} funcionó correctamente")
-                    break
-                except Exception as alt_error:
-                    logger.warning(f"Modelo alternativo {alt_model_name} también falló: {alt_error}")
-                    last_error = alt_error
-                    continue
+            logger.warning(f"Error al generar contenido con modelo {model_name_used}: {e}")
+            # Intentar con otros modelos disponibles como último recurso
+            # Buscar otros modelos Flash disponibles que no hayamos usado
+            if available_models and model_name_used:
+                alternative_flash = [m for m in available_models if 'flash' in m.lower() and m != model_name_used]
+                alternative_flash.sort(key=lambda x: ('2.5' in x, '2.0' in x, '1.5' in x), reverse=True)
+                
+                for alt_model_name in alternative_flash:
+                    try:
+                        logger.info(f"⚠️ Intentando modelo Flash alternativo: {alt_model_name}")
+                        alt_model = genai.GenerativeModel(alt_model_name)
+                        response = alt_model.generate_content([system_prompt, image])
+                        logger.info(f"✅ Modelo alternativo {alt_model_name} funcionó correctamente")
+                        break
+                    except Exception as alt_error:
+                        logger.warning(f"Modelo alternativo {alt_model_name} también falló: {alt_error}")
+                        last_error = alt_error
+                        continue
     
     if response is None:
         raise Exception(
