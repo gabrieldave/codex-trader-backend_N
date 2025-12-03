@@ -18,7 +18,8 @@ GOOGLE_API_KEY = None
 COHERE_API_KEY = None
 
 # Modelo de visión para análisis de imágenes
-# Nombres posibles: "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-pro-vision", "gemini-1.5-pro"
+# Nombres posibles: "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-pro-vision", "gemini-1.5-pro"
+# IMPORTANTE: Usar el modelo configurado aquí (generalmente el más barato), no buscar el más reciente
 VISION_MODEL = "gemini-1.5-flash-latest"
 
 
